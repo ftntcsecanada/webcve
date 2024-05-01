@@ -13,7 +13,6 @@ const ninc3 = ref("");
 const year = ref(1641013200000);
 let filters = [];
 onMounted(async () => {
-  console.log(filters);
   await fetchData();
 });
 watch([year, inc1, inc2, inc3, ninc1, ninc2, ninc3], (val) => {
@@ -92,15 +91,25 @@ async function fetchData() {
   </n-flex>
 
   <main>
-    <h3>count: {{ data.length }}</h3>
-    <div>
-      <p>{{ filters }}</p>
-    </div>
-    <n-card v-for="c in data">
-      <p>{{ c.cveMetadata.cveId }}</p>
-      <p>{{ c.containers.cna.descriptions[0]?.value ?? "no description" }}</p>
-      <p>{{ c.containers.cna.metrics }}</p>
-    </n-card>
+    <n-flex vertical>
+      <n-flex>
+        <n-h3>Count: {{ data.length }}</n-h3>
+        <n-h3>Filters:</n-h3>
+        <n-flex vertical>
+          <n-tag v-for="f in filters" :key="f.field">
+            {{ f.field }} : <b>{{ f.operator }}</b> : {{ f.value }}
+          </n-tag>
+        </n-flex>
+      </n-flex>
+      <n-card size="small" v-for="c in data" :title="c.cveMetadata.cveId">
+        <p>{{ c.containers.cna.descriptions[0]?.value ?? "no description" }}</p>
+        <div v-for="metric in c.containers.cna.metrics[0]" :key="metric">
+          <n-tag v-for="(value, key) in metric" :key="key">
+            {{ key }}: {{ value }}
+          </n-tag>
+        </div>
+      </n-card>
+    </n-flex>
   </main>
 </template>
 

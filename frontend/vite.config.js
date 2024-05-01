@@ -18,5 +18,9 @@ export default defineConfig({
       // string shorthand: http://localhost:5173/foo -> http://localhost:4567/foo
       '/api': 'http://localhost:3000',
     }
+  },
+  build: {
+    outDir: '../site',
+    emptyOutDir: true,
   }
 })

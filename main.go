@@ -279,8 +279,10 @@ func main() {
 	mainrouter.Use(middleware.Recover())
 
 	mainrouter.Use(middleware.StaticWithConfig(middleware.StaticConfig{
-		HTML5: true,
-		Root:  "/site", // because files are located in `web` directory in `webAssets` fs
+		HTML5:  true,
+		Index:  "index.html",
+		Browse: false,
+		Root:   "site", // because files are located in `web` directory in `webAssets` fs
 	}))
 	api := mainrouter.Group("/api")
 	api.POST("/cves", a.GetCves)
