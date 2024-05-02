@@ -247,7 +247,7 @@ func (a *App) GetCves(c echo.Context) error {
 			fortinetCves = append(fortinetCves, cve)
 		}
 	}
-	for _, cve := range fortinetCves {
+	for _, cve := range a.cves {
 		include := true
 
 		for _, p := range params {
@@ -299,7 +299,7 @@ func (a *App) GetCves(c echo.Context) error {
 				if p.Field == "CveMetadata.DateReserved" {
 					filterRawDate, _ := strconv.Atoi(p.Value)
 					filterdate := time.Unix(int64(filterRawDate)/1000, 0)
-					cvedatestring := reflect.ValueOf(cve).FieldByName("CveMetadata").FieldByName("DateReserved").String()
+					cvedatestring := reflect.ValueOf(cve).FieldByName("CveMetadata").FieldByName("DatePublished").String()
 					var cvedate time.Time
 					for _, dateformat := range dateformats {
 						cvedate, err = time.Parse(dateformat, cvedatestring)
@@ -317,7 +317,7 @@ func (a *App) GetCves(c echo.Context) error {
 				}
 			case "lt":
 				if p.Field == "CveMetadata.DateReserved" {
-					cvedatestring := reflect.ValueOf(cve).FieldByName("CveMetadata").FieldByName("DateReserved").String()
+					cvedatestring := reflect.ValueOf(cve).FieldByName("CveMetadata").FieldByName("DatePublished").String()
 					var cvedate time.Time
 					filterRawDate, _ := strconv.Atoi(p.Value)
 					filterdate := time.Unix(int64(filterRawDate)/1000, 0)
