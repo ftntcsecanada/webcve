@@ -141,106 +141,37 @@ type cve struct {
 	Severity    string `json:"severity"`
 }
 
-type cvesimple struct {
-	Containers struct {
-		Cna struct {
-			Affected []struct {
-				Product  string `json:"product"`
-				Vendor   string `json:"vendor"`
-				Versions []struct {
-					Status  string `json:"status"`
-					Version string `json:"version"`
-				} `json:"versions"`
-			} `json:"affected"`
-			Descriptions []struct {
-				Lang  string `json:"lang"`
-				Value string `json:"value"`
-			} `json:"descriptions"`
-			ProblemTypes []struct {
-				Descriptions []struct {
-					Description string `json:"description"`
-					Lang        string `json:"lang"`
-					Type        string `json:"type"`
-				} `json:"descriptions"`
-			} `json:"problemTypes"`
-			ProviderMetadata struct {
-				DateUpdated string `json:"dateUpdated"`
-				OrgID       string `json:"orgId"`
-				ShortName   string `json:"shortName"`
-			} `json:"providerMetadata"`
-			References []struct {
-				Tags []string `json:"tags"`
-				URL  string   `json:"url"`
-			} `json:"references"`
-			XLegacyV4Record struct {
-				CVEDataMeta struct {
-					Assigner string `json:"ASSIGNER"`
-					ID       string `json:"ID"`
-					State    string `json:"STATE"`
-				} `json:"CVE_data_meta"`
-				Affects struct {
-					Vendor struct {
-						VendorData []struct {
-							Product struct {
-								ProductData []struct {
-									ProductName string `json:"product_name"`
-									Version     struct {
-										VersionData []struct {
-											VersionValue string `json:"version_value"`
-										} `json:"version_data"`
-									} `json:"version"`
-								} `json:"product_data"`
-							} `json:"product"`
-							VendorName string `json:"vendor_name"`
-						} `json:"vendor_data"`
-					} `json:"vendor"`
-				} `json:"affects"`
-				DataFormat  string `json:"data_format"`
-				DataType    string `json:"data_type"`
-				DataVersion string `json:"data_version"`
-				Description struct {
-					DescriptionData []struct {
-						Lang  string `json:"lang"`
-						Value string `json:"value"`
-					} `json:"description_data"`
-				} `json:"description"`
-				Problemtype struct {
-					ProblemtypeData []struct {
-						Description []struct {
-							Lang  string `json:"lang"`
-							Value string `json:"value"`
-						} `json:"description"`
-					} `json:"problemtype_data"`
-				} `json:"problemtype"`
-				References struct {
-					ReferenceData []struct {
-						Name      string `json:"name"`
-						Refsource string `json:"refsource"`
-						URL       string `json:"url"`
-					} `json:"reference_data"`
-				} `json:"references"`
-			} `json:"x_legacyV4Record"`
-		} `json:"cna"`
-	} `json:"containers"`
-	CveMetadata struct {
-		AssignerOrgID     string `json:"assignerOrgId"`
-		AssignerShortName string `json:"assignerShortName"`
-		CveID             string `json:"cveId"`
-		DatePublished     string `json:"datePublished"`
-		DateReserved      string `json:"dateReserved"`
-		DateUpdated       string `json:"dateUpdated"`
-		State             string `json:"state"`
-	} `json:"cveMetadata"`
-	DataType    string `json:"dataType"`
-	DataVersion string `json:"dataVersion"`
-}
 type App struct {
-	cves []cve
+	cves    []cve
+	Filters []string
+}
+
+type CveResponse struct {
+	Cves    []cve               `json:"cves"`
+	Options map[string][]string `json:"options"`
 }
 
 func main() {
 	cveFiles := "../cvelistV5/cves" // Directory containing CVE JSON files
 	var a App
+
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.AttackVector")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.AvailabilityImpact")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.BaseSeverity")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.ConfidentialityImpact")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.ExploitCodeMaturity")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.IntegrityImpact")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.PrivilegesRequired")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.RemediationLevel")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.ReportConfidence")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.UserInteraction")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.TemporalSeverity")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.VectorString")
+	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.Version")
+	a.Filters = append(a.Filters, "Containers.Cna.Descriptions.Value")
+	a.Filters = append(a.Filters, "Containers.Cna.Affected.Product")
+	a.Filters = append(a.Filters, "Containers.Cna.Affected.Vendor")
+	a.Filters = append(a.Filters, "Containers.Cna.Affected.Versions")
 
 	cvenum := 0
 	err := filepath.Walk(cveFiles, func(path string, info fs.FileInfo, err error) error {
@@ -286,11 +217,6 @@ func main() {
 	}))
 	api := mainrouter.Group("/api")
 	api.POST("/cves", a.GetCves)
-	api.GET("/schema", a.GetFilters)
-
-	api.GET("/cves", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, a.cves)
-	})
 
 	mainrouter.Logger.Fatal(mainrouter.Start(":3000"))
 
@@ -326,31 +252,48 @@ func (a *App) GetCves(c echo.Context) error {
 
 		for _, p := range params {
 			dateformats := []string{"2006-01-02T15:04:05", "2006-01-02T15:04:05Z"}
+			field := reflect.ValueOf(cve)
+			fieldexists := true
+			for _, v := range strings.Split(p.Field, ".") {
+				if field.IsValid() && field.Kind() == reflect.Slice {
+					field = field.Index(0)
+				}
+				if field.IsValid() && field.Kind() == reflect.Struct {
+					field = field.FieldByName(v)
+					if !field.IsValid() {
+						fieldexists = false
 
+						fmt.Printf("Field %s not found in the structure\n", v)
+					}
+				} else {
+					fieldexists = false
+					fmt.Printf("Field navigation error before accessing %s\n", v)
+				}
+			}
+			if !fieldexists {
+				continue
+			}
 			switch p.Operator {
 			case "eq":
-				if reflect.ValueOf(cve).FieldByName(p.Field).String() != p.Value {
+				if field.String() != p.Value {
 					include = false
 
 				}
 			case "ne":
-				if reflect.ValueOf(cve).FieldByName(p.Field).String() != p.Value {
+				if field.String() == p.Value {
+
 					include = false
 
 				}
 			case "inc":
-				for _, v := range cve.Containers.Cna.Descriptions {
-					if !strings.Contains(strings.ToUpper(v.Value), strings.ToUpper(p.Value)) && v.Lang == "en" {
-						include = false
-						break
-					}
+				if !strings.Contains(strings.ToUpper(field.String()), strings.ToUpper(p.Value)) {
+					include = false
+					break
 				}
 			case "ninc":
-				for _, v := range cve.Containers.Cna.Descriptions {
-					if strings.Contains(strings.ToUpper(v.Value), strings.ToUpper(p.Value)) && v.Lang == "en" {
-						include = false
-						break
-					}
+				if strings.Contains(strings.ToUpper(field.String()), strings.ToUpper(p.Value)) {
+					include = false
+					break
 				}
 			case "gt":
 				if p.Field == "CveMetadata.DateReserved" {
@@ -404,16 +347,49 @@ func (a *App) GetCves(c echo.Context) error {
 		}
 	}
 	fmt.Println("Filtered CVEs: ", len(filteredCves))
-	return c.JSON(http.StatusOK, filteredCves)
 
-}
+	options := make(map[string][]string)
 
-func (a *App) GetFilters(c echo.Context) error {
+	for _, cve := range filteredCves {
+		for _, f := range a.Filters {
+			field := reflect.ValueOf(cve)
+			fieldexists := true
+			for _, v := range strings.Split(f, ".") {
+				if field.IsValid() && field.Kind() == reflect.Slice {
+					field = field.Index(0)
+				}
+				if field.IsValid() && field.Kind() == reflect.Struct {
+					field = field.FieldByName(v)
+					if !field.IsValid() {
+						fieldexists = false
 
-	t := reflect.TypeOf(cve{})
-	fields := inspect(t, "")
+						fmt.Printf("Field %s not found in the structure\n", v)
+					}
+				} else {
+					fieldexists = false
+					fmt.Printf("Field navigation error before accessing %s\n", v)
+				}
+			}
+			if !fieldexists {
+				continue
+			}
 
-	return c.JSON(http.StatusOK, fields)
+			if field.Kind() == reflect.Slice {
+				for i := 0; i < field.Len(); i++ {
+					if !StringInSlice(field.Index(i).String(), options[f]) {
+						options[f] = append(options[f], field.Index(i).String())
+					}
+				}
+			} else {
+				if !StringInSlice(field.String(), options[f]) {
+					options[f] = append(options[f], field.String())
+				}
+			}
+		}
+	}
+	response := CveResponse{Cves: filteredCves, Options: options}
+	return c.JSON(http.StatusOK, response)
+
 }
 
 func inspect(t reflect.Type, path string) []map[string]interface{} {
@@ -440,4 +416,13 @@ func inspect(t reflect.Type, path string) []map[string]interface{} {
 		}
 	}
 	return fields
+}
+
+func StringInSlice(a string, list []string) bool {
+	for _, b := range list {
+		if b == a {
+			return true
+		}
+	}
+	return false
 }
