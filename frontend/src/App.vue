@@ -55,42 +55,42 @@ async function fetchData() {
   ];
   if (inc1.value) {
     filters.value.push({
-      field: "Description",
+      field: "Containers.Cna.Descriptions.Value",
       value: inc1.value,
       operator: "inc",
     });
   }
   if (inc2.value) {
     filters.value.push({
-      field: "Description",
+      field: "Containers.Cna.Descriptions.Value",
       value: inc2.value,
       operator: "inc",
     });
   }
   if (inc3.value) {
     filters.value.push({
-      field: "Description",
+      field: "Containers.Cna.Descriptions.Value",
       value: inc3.value,
       operator: "inc",
     });
   }
   if (ninc1.value) {
     filters.value.push({
-      field: "Description",
+      field: "Containers.Cna.Descriptions.Value",
       value: ninc1.value,
       operator: "ninc",
     });
   }
   if (ninc2.value) {
     filters.value.push({
-      field: "Description",
+      field: "Containers.Cna.Descriptions.Value",
       value: ninc2.value,
       operator: "ninc",
     });
   }
   if (ninc3.value) {
     filters.value.push({
-      field: "Description",
+      field: "Containers.Cna.Descriptions.Value",
       value: ninc3.value,
       operator: "ninc",
     });
