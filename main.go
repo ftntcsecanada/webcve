@@ -1,428 +1,1424 @@
 package main
 
 import (
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/fs"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"path/filepath"
-	"reflect"
-	"strconv"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/labstack/echo"
-	"github.com/labstack/echo/middleware"
+	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"github.com/xuri/excelize/v2"
 )
 
-type filter struct {
-	Field    string `json:"field"`
-	Value    string `json:"value"`
-	Operator string `json:"operator"`
+// CVE represents a simplified, flattened CVE record optimized for filtering
+// AffectedProduct represents a single affected vendor/product
+type AffectedProduct struct {
+	Vendor   string `json:"vendor"`
+	Product  string `json:"product"`
+	Versions string `json:"versions"`
 }
 
-type cve struct {
-	Containers struct {
-		Cna struct {
-			Metrics []struct {
-				CvssV31 struct {
-					AttackComplexity      string  `json:"attackComplexity"`
-					AttackVector          string  `json:"attackVector"`
-					AvailabilityImpact    string  `json:"availabilityImpact"`
-					BaseScore             float64 `json:"baseScore"`
-					BaseSeverity          string  `json:"baseSeverity"`
-					ConfidentialityImpact string  `json:"confidentialityImpact"`
-					ExploitCodeMaturity   string  `json:"exploitCodeMaturity"`
-					IntegrityImpact       string  `json:"integrityImpact"`
-					PrivilegesRequired    string  `json:"privilegesRequired"`
-					RemediationLevel      string  `json:"remediationLevel"`
-					ReportConfidence      string  `json:"reportConfidence"`
-					Scope                 string  `json:"scope"`
-					TemporalScore         float64 `json:"temporalScore"`
-					TemporalSeverity      string  `json:"temporalSeverity"`
-					UserInteraction       string  `json:"userInteraction"`
-					VectorString          string  `json:"vectorString"`
-					Version               string  `json:"version"`
-				} `json:"cvssV3_1"`
-			} `json:"metrics"`
-			Affected []struct {
-				Product  string `json:"product"`
-				Vendor   string `json:"vendor"`
-				Versions []struct {
-					Status  string `json:"status"`
-					Version string `json:"version"`
-				} `json:"versions"`
-			} `json:"affected"`
-			Descriptions []struct {
-				Lang  string `json:"lang"`
-				Value string `json:"value"`
-			} `json:"descriptions"`
-			ProblemTypes []struct {
-				Descriptions []struct {
-					Description string `json:"description"`
-					Lang        string `json:"lang"`
-					Type        string `json:"type"`
-				} `json:"descriptions"`
-			} `json:"problemTypes"`
-			ProviderMetadata struct {
-				DateUpdated string `json:"dateUpdated"`
-				OrgID       string `json:"orgId"`
-				ShortName   string `json:"shortName"`
-			} `json:"providerMetadata"`
-			References []struct {
-				Tags []string `json:"tags"`
-				URL  string   `json:"url"`
-			} `json:"references"`
-			XLegacyV4Record struct {
-				CVEDataMeta struct {
-					Assigner string `json:"ASSIGNER"`
-					ID       string `json:"ID"`
-					State    string `json:"STATE"`
-				} `json:"CVE_data_meta"`
-				Affects struct {
-					Vendor struct {
-						VendorData []struct {
-							Product struct {
-								ProductData []struct {
-									ProductName string `json:"product_name"`
-									Version     struct {
-										VersionData []struct {
-											VersionValue string `json:"version_value"`
-										} `json:"version_data"`
-									} `json:"version"`
-								} `json:"product_data"`
-							} `json:"product"`
-							VendorName string `json:"vendor_name"`
-						} `json:"vendor_data"`
-					} `json:"vendor"`
-				} `json:"affects"`
-				DataFormat  string `json:"data_format"`
-				DataType    string `json:"data_type"`
-				DataVersion string `json:"data_version"`
-				Description struct {
-					DescriptionData []struct {
-						Lang  string `json:"lang"`
-						Value string `json:"value"`
-					} `json:"description_data"`
-				} `json:"description"`
-				Problemtype struct {
-					ProblemtypeData []struct {
-						Description []struct {
-							Lang  string `json:"lang"`
-							Value string `json:"value"`
-						} `json:"description"`
-					} `json:"problemtype_data"`
-				} `json:"problemtype"`
-				References struct {
-					ReferenceData []struct {
-						Name      string `json:"name"`
-						Refsource string `json:"refsource"`
-						URL       string `json:"url"`
-					} `json:"reference_data"`
-				} `json:"references"`
-			} `json:"x_legacyV4Record"`
-		} `json:"cna"`
-	} `json:"containers"`
-	CveMetadata struct {
-		AssignerOrgID     string `json:"assignerOrgId"`
-		AssignerShortName string `json:"assignerShortName"`
-		CveID             string `json:"cveId"`
-		DatePublished     string `json:"datePublished"`
-		DateReserved      string `json:"dateReserved"`
-		DateUpdated       string `json:"dateUpdated"`
-		State             string `json:"state"`
-	} `json:"cveMetadata"`
+type CVE struct {
+	ID            string    `json:"id"`
+	State         string    `json:"state"`
+	DatePublished time.Time `json:"datePublished"`
+	DateUpdated   time.Time `json:"dateUpdated"`
+	DateReserved  time.Time `json:"dateReserved"`
+	Year          int       `json:"year"`
+
+	// Affected products - primary (first) for filtering
+	Vendor   string `json:"vendor"`
+	Product  string `json:"product"`
+	Versions string `json:"versions"`
+
+	// All affected products
+	AffectedProducts []AffectedProduct `json:"affectedProducts"`
+
+	// Description
+	Title       string `json:"title"`
+	Description string `json:"description"`
+
+	// CVSS Metrics
+	CvssVersion           string  `json:"cvssVersion"`
+	BaseScore             float64 `json:"baseScore"`
+	BaseSeverity          string  `json:"baseSeverity"`
+	AttackVector          string  `json:"attackVector"`
+	AttackComplexity      string  `json:"attackComplexity"`
+	PrivilegesRequired    string  `json:"privilegesRequired"`
+	UserInteraction       string  `json:"userInteraction"`
+	Scope                 string  `json:"scope"`
+	ConfidentialityImpact string  `json:"confidentialityImpact"`
+	IntegrityImpact       string  `json:"integrityImpact"`
+	AvailabilityImpact    string  `json:"availabilityImpact"`
+	VectorString          string  `json:"vectorString"`
+
+	// Problem types (CWE)
+	CWE            string `json:"cwe"`
+	CWEDescription string `json:"cweDescription"`
+
+	// References
+	References []Reference `json:"references"`
+
+	// Assigner
+	AssignerOrg string `json:"assignerOrg"`
+
+	// CISA KEV (Known Exploited Vulnerabilities)
+	InKEV                      bool   `json:"inKEV"`
+	KEVDateAdded               string `json:"kevDateAdded,omitempty"`
+	KEVDueDate                 string `json:"kevDueDate,omitempty"`
+	KEVRequiredAction          string `json:"kevRequiredAction,omitempty"`
+	KEVKnownRansomwareCampaign string `json:"kevKnownRansomwareCampaign,omitempty"`
+	KEVNotes                   string `json:"kevNotes,omitempty"`
+
+	// File path for cache validation
+	FilePath string `json:"-"`
+}
+
+type Reference struct {
+	URL  string   `json:"url"`
+	Tags []string `json:"tags"`
+}
+
+// CvssMetrics is a flexible structure to capture CVSS data from any version
+type CvssMetrics struct {
+	Version               string  `json:"version"`
+	BaseScore             float64 `json:"baseScore"`
+	BaseSeverity          string  `json:"baseSeverity"`
+	AttackVector          string  `json:"attackVector"`
+	AttackComplexity      string  `json:"attackComplexity"`
+	PrivilegesRequired    string  `json:"privilegesRequired"`
+	UserInteraction       string  `json:"userInteraction"`
+	Scope                 string  `json:"scope"`
+	ConfidentialityImpact string  `json:"confidentialityImpact"`
+	IntegrityImpact       string  `json:"integrityImpact"`
+	AvailabilityImpact    string  `json:"availabilityImpact"`
+	VectorString          string  `json:"vectorString"`
+}
+
+// MetricEntry represents a single metric entry which can have various CVSS versions
+type MetricEntry struct {
+	CvssV40 *CvssMetrics `json:"cvssV4_0"`
+	CvssV31 *CvssMetrics `json:"cvssV3_1"`
+	CvssV30 *CvssMetrics `json:"cvssV3_0"`
+	CvssV2  *struct {
+		Version      string  `json:"version"`
+		BaseScore    float64 `json:"baseScore"`
+		VectorString string  `json:"vectorString"`
+	} `json:"cvssV2_0"`
+}
+
+// ContainerData represents common fields in both CNA and ADP containers
+type ContainerData struct {
+	Title    string `json:"title"`
+	Affected []struct {
+		Vendor   string `json:"vendor"`
+		Product  string `json:"product"`
+		Versions []struct {
+			Version string `json:"version"`
+			Status  string `json:"status"`
+		} `json:"versions"`
+	} `json:"affected"`
+	Descriptions []struct {
+		Lang  string `json:"lang"`
+		Value string `json:"value"`
+	} `json:"descriptions"`
+	Metrics      []MetricEntry `json:"metrics"`
+	ProblemTypes []struct {
+		Descriptions []struct {
+			CweId       string `json:"cweId"`
+			Description string `json:"description"`
+			Lang        string `json:"lang"`
+			Type        string `json:"type"`
+		} `json:"descriptions"`
+	} `json:"problemTypes"`
+	References []struct {
+		URL  string   `json:"url"`
+		Tags []string `json:"tags"`
+	} `json:"references"`
+}
+
+// RawCVE represents the original CVE JSON structure
+type RawCVE struct {
 	DataType    string `json:"dataType"`
 	DataVersion string `json:"dataVersion"`
-	Description string `json:"description"`
-	Vendor      string `json:"vendor"`
-	Severity    string `json:"severity"`
+	CveMetadata struct {
+		CveID             string `json:"cveId"`
+		AssignerOrgID     string `json:"assignerOrgId"`
+		AssignerShortName string `json:"assignerShortName"`
+		State             string `json:"state"`
+		DateReserved      string `json:"dateReserved"`
+		DatePublished     string `json:"datePublished"`
+		DateUpdated       string `json:"dateUpdated"`
+	} `json:"cveMetadata"`
+	Containers struct {
+		Cna ContainerData   `json:"cna"`
+		Adp []ContainerData `json:"adp"`
+	} `json:"containers"`
 }
 
+// Cache represents the GOB cache structure
+type Cache struct {
+	Version   int               `json:"version"`
+	BuildTime time.Time         `json:"buildTime"`
+	CVEs      []CVE             `json:"cves"`
+	FileIndex map[string]string `json:"fileIndex"` // filepath -> CVE ID mapping
+}
+
+// KEVCatalog represents the CISA Known Exploited Vulnerabilities catalog
+type KEVCatalog struct {
+	Title           string           `json:"title"`
+	CatalogVersion  string           `json:"catalogVersion"`
+	DateReleased    string           `json:"dateReleased"`
+	Count           int              `json:"count"`
+	Vulnerabilities []KEVEntry       `json:"vulnerabilities"`
+}
+
+// KEVEntry represents a single entry in the KEV catalog
+type KEVEntry struct {
+	CveID                      string   `json:"cveID"`
+	VendorProject              string   `json:"vendorProject"`
+	Product                    string   `json:"product"`
+	VulnerabilityName          string   `json:"vulnerabilityName"`
+	DateAdded                  string   `json:"dateAdded"`
+	ShortDescription           string   `json:"shortDescription"`
+	RequiredAction             string   `json:"requiredAction"`
+	DueDate                    string   `json:"dueDate"`
+	KnownRansomwareCampaignUse string   `json:"knownRansomwareCampaignUse"`
+	Notes                      string   `json:"notes"`
+	CWEs                       []string `json:"cwes"`
+}
+
+const (
+	CacheVersion = 4 // Incremented to force cache rebuild with KEV details
+	CachePath    = "cve_cache.gob"
+	CVEDir       = "cves"
+	KEVPath      = "kev/known_exploited_vulnerabilities.json"
+)
+
+// App holds the application state
 type App struct {
-	cves    []cve
-	Filters []string
+	cves     []CVE
+	cveIndex map[string]*CVE      // Quick lookup by ID
+	kevIndex map[string]*KEVEntry // CVE IDs in CISA KEV catalog with full entry data
+	mu       sync.RWMutex
+
+	// Filter option caches
+	vendors    []string
+	products   []string
+	severities []string
+	years      []int
+	cwes       []string
 }
 
-type CveResponse struct {
-	Cves    []cve               `json:"cves"`
-	Options map[string][]string `json:"options"`
+// FilterRequest represents incoming filter parameters
+type FilterRequest struct {
+	Year         *int     `json:"year"`
+	YearFrom     *int     `json:"yearFrom"`
+	YearTo       *int     `json:"yearTo"`
+	Vendor       string   `json:"vendor"`   // Single vendor (legacy)
+	Product      string   `json:"product"`  // Single product (legacy)
+	Vendors      []string `json:"vendors"`  // Multiple vendors
+	Products     []string `json:"products"` // Multiple products
+	Severity     string   `json:"severity"`
+	Search       string   `json:"search"`
+	CWE          string   `json:"cwe"`
+	ScoreMin     *float64 `json:"scoreMin"`
+	ScoreMax     *float64 `json:"scoreMax"`
+	InKEV        *bool    `json:"inKEV"` // Filter by CISA KEV status
+	SortBy       string   `json:"sortBy"`
+	SortDesc     bool     `json:"sortDesc"`
+	Page         int      `json:"page"`
+	PageSize     int      `json:"pageSize"`
+}
+
+// FilterResponse contains filtered results and metadata
+type FilterResponse struct {
+	CVEs       []CVE         `json:"cves"`
+	Total      int           `json:"total"`
+	Page       int           `json:"page"`
+	PageSize   int           `json:"pageSize"`
+	TotalPages int           `json:"totalPages"`
+	Options    FilterOptions `json:"options"`
+	YearCounts []YearCount   `json:"yearCounts"`
+}
+
+// YearCount represents CVE count for a specific year with severity breakdown
+type YearCount struct {
+	Year     int            `json:"year"`
+	Count    int            `json:"count"`
+	Severity map[string]int `json:"severity"` // Breakdown by severity: CRITICAL, HIGH, MEDIUM, LOW
+}
+
+// FilterOptions provides available filter values
+type FilterOptions struct {
+	Vendors       []string `json:"vendors"`
+	Products      []string `json:"products"`
+	Severities    []string `json:"severities"`
+	Years         []int    `json:"years"`
+	CWEs          []string `json:"cwes"`
+	AttackVectors []string `json:"attackVectors"`
+}
+
+// StatsResponse provides database statistics
+type StatsResponse struct {
+	TotalCVEs      int            `json:"totalCves"`
+	LastUpdated    time.Time      `json:"lastUpdated"`
+	YearRange      [2]int         `json:"yearRange"`
+	TopVendors     []VendorCount  `json:"topVendors"`
+	SeverityCounts map[string]int `json:"severityCounts"`
+}
+
+type VendorCount struct {
+	Vendor string `json:"vendor"`
+	Count  int    `json:"count"`
 }
 
 func main() {
-	cveFiles := "../cvelistV5/cves" // Directory containing CVE JSON files
-	var a App
+	app := &App{
+		cveIndex: make(map[string]*CVE),
+		kevIndex: make(map[string]*KEVEntry),
+	}
 
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.AttackVector")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.AvailabilityImpact")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.BaseSeverity")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.ConfidentialityImpact")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.ExploitCodeMaturity")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.IntegrityImpact")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.PrivilegesRequired")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.RemediationLevel")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.ReportConfidence")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.UserInteraction")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.TemporalSeverity")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.VectorString")
-	a.Filters = append(a.Filters, "Containers.Cna.Metrics.CvssV31.Version")
-	a.Filters = append(a.Filters, "Containers.Cna.Descriptions.Value")
-	a.Filters = append(a.Filters, "Containers.Cna.Affected.Product")
-	a.Filters = append(a.Filters, "Containers.Cna.Affected.Vendor")
-	a.Filters = append(a.Filters, "Containers.Cna.Affected.Versions")
+	// Load CISA KEV catalog first
+	if err := app.loadKEV(); err != nil {
+		fmt.Printf("Warning: Could not load KEV catalog: %v\n", err)
+	} else {
+		fmt.Printf("Loaded %d KEV entries\n", len(app.kevIndex))
+	}
 
-	cvenum := 0
-	err := filepath.Walk(cveFiles, func(path string, info fs.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// Load CVEs with caching
+	if err := app.loadCVEs(); err != nil {
+		fmt.Printf("Error loading CVEs: %v\n", err)
+		return
+	}
+
+	// Build filter option caches
+	app.buildFilterCaches()
+
+	// Count KEV matches
+	kevCount := 0
+	for _, cve := range app.cves {
+		if cve.InKEV {
+			kevCount++
 		}
-		if !info.IsDir() && filepath.Ext(path) == ".json" {
-			data, err := ioutil.ReadFile(path)
-			if err != nil {
-				fmt.Printf("Failed to read %s: %s\n", path, err)
-				return nil // returning nil to continue processing other files
-			}
-			var cveData cve
-			if err := json.Unmarshal(data, &cveData); err != nil {
-				fmt.Printf("Failed to parse JSON from %s: %s\n", path, err)
-				return nil
-			}
+	}
+	fmt.Printf("Loaded %d CVEs (%d in CISA KEV)\n", len(app.cves), kevCount)
 
-			a.cves = append(a.cves, cveData)
-			cvenum++
+	// Setup Echo router
+	e := echo.New()
+	e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
+	e.Use(middleware.CORS())
+
+	// Serve static files
+	e.Use(middleware.StaticWithConfig(middleware.StaticConfig{
+		HTML5:  true,
+		Index:  "index.html",
+		Browse: false,
+		Root:   "site",
+	}))
+
+	// API routes
+	api := e.Group("/api")
+	api.POST("/cves", app.handleFilterCVEs)
+	api.GET("/cves/:id", app.handleGetCVE)
+	api.GET("/stats", app.handleGetStats)
+	api.GET("/options", app.handleGetOptions)
+	api.POST("/options/search", app.handleSearchOptions)
+	api.POST("/export", app.handleExportXLS)
+
+	e.Logger.Fatal(e.Start(":3000"))
+}
+
+// loadKEV loads the CISA Known Exploited Vulnerabilities catalog
+func (app *App) loadKEV() error {
+	data, err := os.ReadFile(KEVPath)
+	if err != nil {
+		return err
+	}
+
+	var catalog KEVCatalog
+	if err := json.Unmarshal(data, &catalog); err != nil {
+		return err
+	}
+
+	for i := range catalog.Vulnerabilities {
+		entry := &catalog.Vulnerabilities[i]
+		app.kevIndex[entry.CveID] = entry
+	}
+
+	return nil
+}
+
+func (app *App) loadCVEs() error {
+	// Try to load from cache first
+	cache, err := app.loadCache()
+	if err == nil && cache.Version == CacheVersion {
+		fmt.Println("Loading CVEs from cache...")
+
+		// Verify cache is up to date
+		missingFiles, newFiles := app.verifyCacheIntegrity(cache)
+
+		if len(missingFiles) == 0 && len(newFiles) == 0 {
+			app.cves = cache.CVEs
+			for i := range app.cves {
+				app.cveIndex[app.cves[i].ID] = &app.cves[i]
+			}
+			// Apply KEV status (KEV catalog may have been updated)
+			app.applyKEVStatus()
+			fmt.Printf("Cache valid, loaded %d CVEs\n", len(app.cves))
+			return nil
+		}
+
+		fmt.Printf("Cache outdated: %d missing, %d new files\n", len(missingFiles), len(newFiles))
+
+		// Incremental update: keep valid entries, add new ones
+		app.cves = cache.CVEs
+		for i := range app.cves {
+			app.cveIndex[app.cves[i].ID] = &app.cves[i]
+		}
+
+		// Remove entries for missing files
+		if len(missingFiles) > 0 {
+			validCVEs := make([]CVE, 0, len(app.cves))
+			for _, cve := range app.cves {
+				if _, missing := missingFiles[cve.FilePath]; !missing {
+					validCVEs = append(validCVEs, cve)
+				} else {
+					delete(app.cveIndex, cve.ID)
+				}
+			}
+			app.cves = validCVEs
+		}
+
+		// Add new files
+		if len(newFiles) > 0 {
+			fmt.Printf("Loading %d new CVE files...\n", len(newFiles))
+			newCVEs := app.loadCVEFiles(newFiles)
+			app.cves = append(app.cves, newCVEs...)
+			for i := len(app.cves) - len(newCVEs); i < len(app.cves); i++ {
+				app.cveIndex[app.cves[i].ID] = &app.cves[i]
+			}
+		}
+
+		// Apply KEV status (KEV catalog may have been updated)
+		app.applyKEVStatus()
+
+		// Save updated cache
+		app.saveCache()
+		return nil
+	}
+
+	// No valid cache, load all CVEs from disk
+	fmt.Println("No valid cache found, loading all CVEs from disk...")
+	files := app.findAllCVEFiles()
+	app.cves = app.loadCVEFiles(files)
+
+	for i := range app.cves {
+		app.cveIndex[app.cves[i].ID] = &app.cves[i]
+	}
+
+	// Apply KEV status to all CVEs
+	app.applyKEVStatus()
+
+	// Save cache for next time
+	app.saveCache()
+
+	return nil
+}
+
+// applyKEVStatus marks CVEs that are in the CISA KEV catalog and populates KEV details
+func (app *App) applyKEVStatus() {
+	for i := range app.cves {
+		if kevEntry := app.kevIndex[app.cves[i].ID]; kevEntry != nil {
+			app.cves[i].InKEV = true
+			app.cves[i].KEVDateAdded = kevEntry.DateAdded
+			app.cves[i].KEVDueDate = kevEntry.DueDate
+			app.cves[i].KEVRequiredAction = kevEntry.RequiredAction
+			app.cves[i].KEVKnownRansomwareCampaign = kevEntry.KnownRansomwareCampaignUse
+			app.cves[i].KEVNotes = kevEntry.Notes
+		}
+	}
+}
+
+func (app *App) loadCache() (*Cache, error) {
+	file, err := os.Open(CachePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var cache Cache
+	decoder := gob.NewDecoder(file)
+	if err := decoder.Decode(&cache); err != nil {
+		return nil, err
+	}
+
+	return &cache, nil
+}
+
+func (app *App) saveCache() error {
+	file, err := os.Create(CachePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	fileIndex := make(map[string]string)
+	for _, cve := range app.cves {
+		fileIndex[cve.FilePath] = cve.ID
+	}
+
+	cache := Cache{
+		Version:   CacheVersion,
+		BuildTime: time.Now(),
+		CVEs:      app.cves,
+		FileIndex: fileIndex,
+	}
+
+	encoder := gob.NewEncoder(file)
+	return encoder.Encode(&cache)
+}
+
+func (app *App) verifyCacheIntegrity(cache *Cache) (missing map[string]bool, newFiles []string) {
+	missing = make(map[string]bool)
+
+	// Check all cached files still exist
+	for filePath := range cache.FileIndex {
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			missing[filePath] = true
+		}
+	}
+
+	// Find new files not in cache
+	currentFiles := app.findAllCVEFiles()
+	for _, file := range currentFiles {
+		if _, exists := cache.FileIndex[file]; !exists {
+			newFiles = append(newFiles, file)
+		}
+	}
+
+	return missing, newFiles
+}
+
+func (app *App) findAllCVEFiles() []string {
+	var files []string
+
+	filepath.Walk(CVEDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !info.IsDir() && strings.HasSuffix(path, ".json") && strings.Contains(path, "CVE-") {
+			files = append(files, path)
 		}
 		return nil
 	})
 
+	return files
+}
+
+func (app *App) loadCVEFiles(files []string) []CVE {
+	// Use worker pool for parallel loading
+	numWorkers := 8
+	fileChan := make(chan string, len(files))
+	resultChan := make(chan CVE, len(files))
+
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				if cve, err := app.parseCVEFile(file); err == nil {
+					resultChan <- cve
+				}
+			}
+		}()
+	}
+
+	// Send files to workers
+	for _, file := range files {
+		fileChan <- file
+	}
+	close(fileChan)
+
+	// Wait for workers to finish
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var cves []CVE
+	for cve := range resultChan {
+		cves = append(cves, cve)
+	}
+
+	return cves
+}
+
+func (app *App) parseCVEFile(path string) (CVE, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Printf("Error walking the path %q: %v\n", cveFiles, err)
+		return CVE{}, err
+	}
+
+	var raw RawCVE
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return CVE{}, err
+	}
+
+	cve := CVE{
+		ID:          raw.CveMetadata.CveID,
+		State:       raw.CveMetadata.State,
+		AssignerOrg: raw.CveMetadata.AssignerShortName,
+		FilePath:    path,
+	}
+
+	// Parse dates
+	dateFormats := []string{
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05",
+	}
+
+	cve.DatePublished = parseDate(raw.CveMetadata.DatePublished, dateFormats)
+	cve.DateUpdated = parseDate(raw.CveMetadata.DateUpdated, dateFormats)
+	cve.DateReserved = parseDate(raw.CveMetadata.DateReserved, dateFormats)
+
+	if !cve.DatePublished.IsZero() {
+		cve.Year = cve.DatePublished.Year()
+	} else if !cve.DateReserved.IsZero() {
+		cve.Year = cve.DateReserved.Year()
+	}
+
+	// Extract all affected products
+	for _, affected := range raw.Containers.Cna.Affected {
+		var versions []string
+		for _, v := range affected.Versions {
+			if v.Version != "" {
+				versions = append(versions, v.Version)
+			}
+		}
+		ap := AffectedProduct{
+			Vendor:   affected.Vendor,
+			Product:  affected.Product,
+			Versions: strings.Join(versions, ", "),
+		}
+		cve.AffectedProducts = append(cve.AffectedProducts, ap)
+	}
+
+	// Set primary vendor/product from first entry (for filtering compatibility)
+	if len(cve.AffectedProducts) > 0 {
+		cve.Vendor = cve.AffectedProducts[0].Vendor
+		cve.Product = cve.AffectedProducts[0].Product
+		cve.Versions = cve.AffectedProducts[0].Versions
+	}
+
+	// Extract title and description
+	cve.Title = raw.Containers.Cna.Title
+	for _, desc := range raw.Containers.Cna.Descriptions {
+		if desc.Lang == "en" {
+			cve.Description = desc.Value
+			break
+		}
+	}
+	if cve.Description == "" && len(raw.Containers.Cna.Descriptions) > 0 {
+		cve.Description = raw.Containers.Cna.Descriptions[0].Value
+	}
+
+	// Extract CVSS metrics from CNA first, then ADP if not found
+	// Priority: CVSS 3.1 > CVSS 3.0 > CVSS 4.0 > CVSS 2.0
+	extractCvssFromMetrics(raw.Containers.Cna.Metrics, &cve)
+
+	// If no CVSS found in CNA, check ADP containers
+	if cve.BaseScore == 0 && len(raw.Containers.Adp) > 0 {
+		for _, adp := range raw.Containers.Adp {
+			extractCvssFromMetrics(adp.Metrics, &cve)
+			if cve.BaseScore > 0 {
+				break
+			}
+		}
+	}
+
+	// Extract CWE
+	for _, pt := range raw.Containers.Cna.ProblemTypes {
+		for _, desc := range pt.Descriptions {
+			if desc.CweId != "" {
+				cve.CWE = desc.CweId
+				cve.CWEDescription = desc.Description
+				break
+			} else if strings.HasPrefix(desc.Description, "CWE-") {
+				parts := strings.SplitN(desc.Description, " ", 2)
+				cve.CWE = parts[0]
+				if len(parts) > 1 {
+					cve.CWEDescription = parts[1]
+				}
+				break
+			}
+		}
+		if cve.CWE != "" {
+			break
+		}
+	}
+
+	// Extract references
+	for _, ref := range raw.Containers.Cna.References {
+		cve.References = append(cve.References, Reference{
+			URL:  ref.URL,
+			Tags: ref.Tags,
+		})
+	}
+
+	return cve, nil
+}
+
+func parseDate(s string, formats []string) time.Time {
+	for _, format := range formats {
+		if t, err := time.Parse(format, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// extractCvssFromMetrics extracts CVSS data from metrics array
+// Priority: CVSS 3.1 > CVSS 3.0 > CVSS 4.0 > CVSS 2.0
+func extractCvssFromMetrics(metrics []MetricEntry, cve *CVE) {
+	for _, metric := range metrics {
+		// Prefer CVSS 3.1
+		if metric.CvssV31 != nil {
+			applyCvssMetrics(metric.CvssV31, cve)
+			return
+		}
+	}
+
+	for _, metric := range metrics {
+		// Then CVSS 3.0
+		if metric.CvssV30 != nil {
+			applyCvssMetrics(metric.CvssV30, cve)
+			return
+		}
+	}
+
+	for _, metric := range metrics {
+		// Then CVSS 4.0 (newer but less common)
+		if metric.CvssV40 != nil {
+			applyCvssMetrics(metric.CvssV40, cve)
+			return
+		}
+	}
+
+	for _, metric := range metrics {
+		// Finally CVSS 2.0
+		if metric.CvssV2 != nil {
+			cve.CvssVersion = metric.CvssV2.Version
+			cve.BaseScore = metric.CvssV2.BaseScore
+			cve.VectorString = metric.CvssV2.VectorString
+			// CVSS 2.0 doesn't have severity, derive from score
+			cve.BaseSeverity = deriveSeverityFromScore(metric.CvssV2.BaseScore)
+			return
+		}
+	}
+}
+
+// applyCvssMetrics applies CVSS metrics to the CVE struct
+func applyCvssMetrics(cvss *CvssMetrics, cve *CVE) {
+	cve.CvssVersion = cvss.Version
+	cve.BaseScore = cvss.BaseScore
+	cve.BaseSeverity = strings.ToUpper(cvss.BaseSeverity)
+	cve.AttackVector = cvss.AttackVector
+	cve.AttackComplexity = cvss.AttackComplexity
+	cve.PrivilegesRequired = cvss.PrivilegesRequired
+	cve.UserInteraction = cvss.UserInteraction
+	cve.Scope = cvss.Scope
+	cve.ConfidentialityImpact = cvss.ConfidentialityImpact
+	cve.IntegrityImpact = cvss.IntegrityImpact
+	cve.AvailabilityImpact = cvss.AvailabilityImpact
+	cve.VectorString = cvss.VectorString
+
+	// If severity is empty but we have a score, derive it
+	if cve.BaseSeverity == "" && cve.BaseScore > 0 {
+		cve.BaseSeverity = deriveSeverityFromScore(cve.BaseScore)
+	}
+}
+
+// deriveSeverityFromScore derives severity rating from CVSS score
+func deriveSeverityFromScore(score float64) string {
+	switch {
+	case score >= 9.0:
+		return "CRITICAL"
+	case score >= 7.0:
+		return "HIGH"
+	case score >= 4.0:
+		return "MEDIUM"
+	case score > 0:
+		return "LOW"
+	default:
+		return ""
+	}
+}
+
+func (app *App) buildFilterCaches() {
+	vendorSet := make(map[string]bool)
+	productSet := make(map[string]bool)
+	severitySet := make(map[string]bool)
+	yearSet := make(map[int]bool)
+	cweSet := make(map[string]bool)
+
+	for _, cve := range app.cves {
+		if cve.Vendor != "" {
+			vendorSet[cve.Vendor] = true
+		}
+		if cve.Product != "" {
+			productSet[cve.Product] = true
+		}
+		if cve.BaseSeverity != "" {
+			severitySet[cve.BaseSeverity] = true
+		}
+		if cve.Year > 0 {
+			yearSet[cve.Year] = true
+		}
+		if cve.CWE != "" {
+			cweSet[cve.CWE] = true
+		}
+	}
+
+	app.vendors = mapKeysToSlice(vendorSet)
+	app.products = mapKeysToSlice(productSet)
+	app.severities = mapKeysToSlice(severitySet)
+	app.cwes = mapKeysToSlice(cweSet)
+
+	for year := range yearSet {
+		app.years = append(app.years, year)
+	}
+
+	sort.Strings(app.vendors)
+	sort.Strings(app.products)
+	sort.Strings(app.severities)
+	sort.Strings(app.cwes)
+	sort.Sort(sort.Reverse(sort.IntSlice(app.years)))
+}
+
+func mapKeysToSlice(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func (app *App) handleFilterCVEs(c echo.Context) error {
+	var req FilterRequest
+	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// Default pagination
+	if req.PageSize <= 0 {
+		req.PageSize = 50
+	}
+	if req.PageSize > 1000 {
+		req.PageSize = 1000
+	}
+	if req.Page < 1 {
+		req.Page = 1
+	}
+
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+
+	// Filter CVEs
+	var filtered []CVE
+	for _, cve := range app.cves {
+		if !app.matchesFilter(&cve, &req) {
+			continue
+		}
+		// Create a copy to potentially modify the display vendor/product
+		cveCopy := cve
+		// If filtering by vendor/product, update display to show the matched one
+		app.updateDisplayVendorProduct(&cveCopy, &req)
+		filtered = append(filtered, cveCopy)
+	}
+
+	// Sort
+	app.sortCVEs(filtered, req.SortBy, req.SortDesc)
+
+	// Paginate
+	total := len(filtered)
+	totalPages := (total + req.PageSize - 1) / req.PageSize
+
+	start := (req.Page - 1) * req.PageSize
+	end := start + req.PageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+
+	pagedCVEs := filtered[start:end]
+
+	// Calculate year counts for the last 10 years from filtered results with severity breakdown
+	currentYear := time.Now().Year()
+	yearCountMap := make(map[int]int)
+	yearSeverityMap := make(map[int]map[string]int)
+	for _, cve := range filtered {
+		if cve.Year >= currentYear-9 && cve.Year <= currentYear {
+			yearCountMap[cve.Year]++
+			if yearSeverityMap[cve.Year] == nil {
+				yearSeverityMap[cve.Year] = make(map[string]int)
+			}
+			if cve.BaseSeverity != "" {
+				yearSeverityMap[cve.Year][cve.BaseSeverity]++
+			} else {
+				yearSeverityMap[cve.Year]["NONE"]++
+			}
+		}
+	}
+
+	// Convert to sorted slice
+	var yearCounts []YearCount
+	for year := currentYear - 9; year <= currentYear; year++ {
+		severity := yearSeverityMap[year]
+		if severity == nil {
+			severity = make(map[string]int)
+		}
+		yearCounts = append(yearCounts, YearCount{
+			Year:     year,
+			Count:    yearCountMap[year],
+			Severity: severity,
+		})
+	}
+
+	response := FilterResponse{
+		CVEs:       pagedCVEs,
+		Total:      total,
+		Page:       req.Page,
+		PageSize:   req.PageSize,
+		TotalPages: totalPages,
+		YearCounts: yearCounts,
+		Options: FilterOptions{
+			Vendors:       app.vendors[:min(100, len(app.vendors))],
+			Products:      app.products[:min(100, len(app.products))],
+			Severities:    app.severities,
+			Years:         app.years,
+			CWEs:          app.cwes[:min(100, len(app.cwes))],
+			AttackVectors: []string{"NETWORK", "ADJACENT_NETWORK", "LOCAL", "PHYSICAL"},
+		},
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+// updateDisplayVendorProduct updates the display vendor/product to show the one that matched the filter
+func (app *App) updateDisplayVendorProduct(cve *CVE, req *FilterRequest) {
+	vendors := req.Vendors
+	if req.Vendor != "" && len(vendors) == 0 {
+		vendors = []string{req.Vendor}
+	}
+	products := req.Products
+	if req.Product != "" && len(products) == 0 {
+		products = []string{req.Product}
+	}
+
+	// If no vendor/product filter, keep the original
+	if len(vendors) == 0 && len(products) == 0 {
 		return
 	}
 
-	// Print or process the parsed CVE data
-	fmt.Println("Successfully parsed CVEs:", len(a.cves))
+	// Find the first affected product that matches the filter
+	for _, ap := range cve.AffectedProducts {
+		vendorMatch := len(vendors) == 0
+		productMatch := len(products) == 0
 
-	mainrouter := echo.New()
-
-	mainrouter.Use(middleware.Logger())
-	mainrouter.Use(middleware.Recover())
-
-	mainrouter.Use(middleware.StaticWithConfig(middleware.StaticConfig{
-		HTML5:  true,
-		Index:  "index.html",
-		Browse: false,
-		Root:   "site", // because files are located in `web` directory in `webAssets` fs
-	}))
-	api := mainrouter.Group("/api")
-	api.POST("/cves", a.GetCves)
-
-	mainrouter.Logger.Fatal(mainrouter.Start(":3000"))
-
-}
-
-func (a *App) GetCves(c echo.Context) error {
-	body, err := io.ReadAll(c.Request().Body)
-	if err != nil {
-		return err
-	}
-	params := []filter{}
-	err = json.Unmarshal(body, &params)
-	if err != nil {
-		return err
-	}
-
-	var filteredCves []cve
-	var fortinetCves []cve
-	for _, cve := range a.cves {
-		include := false
-		for _, v := range cve.Containers.Cna.Affected {
-			if v.Vendor == "Fortinet" {
-				include = true
+		for _, v := range vendors {
+			if strings.EqualFold(ap.Vendor, v) {
+				vendorMatch = true
 				break
 			}
 		}
-		if include {
-			fortinetCves = append(fortinetCves, cve)
-		}
-	}
-	for _, cve := range a.cves {
-		include := true
-
-		for _, p := range params {
-			dateformats := []string{"2006-01-02T15:04:05", "2006-01-02T15:04:05Z"}
-			field := reflect.ValueOf(cve)
-			fieldexists := true
-			for _, v := range strings.Split(p.Field, ".") {
-				if field.IsValid() && field.Kind() == reflect.Slice {
-					field = field.Index(0)
-				}
-				if field.IsValid() && field.Kind() == reflect.Struct {
-					field = field.FieldByName(v)
-					if !field.IsValid() {
-						fieldexists = false
-
-						fmt.Printf("Field %s not found in the structure\n", v)
-					}
-				} else {
-					fieldexists = false
-					fmt.Printf("Field navigation error before accessing %s\n", v)
-				}
-			}
-			if !fieldexists {
-				continue
-			}
-			switch p.Operator {
-			case "eq":
-				if field.String() != p.Value {
-					include = false
-
-				}
-			case "ne":
-				if field.String() == p.Value {
-
-					include = false
-
-				}
-			case "inc":
-				if !strings.Contains(strings.ToUpper(field.String()), strings.ToUpper(p.Value)) {
-					include = false
-					break
-				}
-			case "ninc":
-				if strings.Contains(strings.ToUpper(field.String()), strings.ToUpper(p.Value)) {
-					include = false
-					break
-				}
-			case "gt":
-				if p.Field == "CveMetadata.DateReserved" {
-					filterRawDate, _ := strconv.Atoi(p.Value)
-					filterdate := time.Unix(int64(filterRawDate)/1000, 0)
-					cvedatestring := reflect.ValueOf(cve).FieldByName("CveMetadata").FieldByName("DatePublished").String()
-					var cvedate time.Time
-					for _, dateformat := range dateformats {
-						cvedate, err = time.Parse(dateformat, cvedatestring)
-						if err == nil {
-							break
-						}
-					}
-					if err != nil {
-						fmt.Println(err)
-						break
-					}
-					if !cvedate.After(filterdate) {
-						include = false
-					}
-				}
-			case "lt":
-				if p.Field == "CveMetadata.DateReserved" {
-					cvedatestring := reflect.ValueOf(cve).FieldByName("CveMetadata").FieldByName("DatePublished").String()
-					var cvedate time.Time
-					filterRawDate, _ := strconv.Atoi(p.Value)
-					filterdate := time.Unix(int64(filterRawDate)/1000, 0)
-					for _, dateformat := range dateformats {
-						cvedate, err = time.Parse(dateformat, cvedatestring)
-						if err == nil {
-							break
-						}
-					}
-					if err != nil {
-						fmt.Println(err)
-						break
-					}
-					if !cvedate.Before(filterdate) {
-						include = false
-
-					}
-				}
-			}
-			if !include {
+		for _, p := range products {
+			if strings.EqualFold(ap.Product, p) {
+				productMatch = true
 				break
 			}
-
 		}
-		if include {
-			filteredCves = append(filteredCves, cve)
-		}
-	}
-	fmt.Println("Filtered CVEs: ", len(filteredCves))
 
-	options := make(map[string][]string)
-
-	for _, cve := range filteredCves {
-		for _, f := range a.Filters {
-			field := reflect.ValueOf(cve)
-			fieldexists := true
-			for _, v := range strings.Split(f, ".") {
-				if field.IsValid() && field.Kind() == reflect.Slice {
-					field = field.Index(0)
-				}
-				if field.IsValid() && field.Kind() == reflect.Struct {
-					field = field.FieldByName(v)
-					if !field.IsValid() {
-						fieldexists = false
-
-						fmt.Printf("Field %s not found in the structure\n", v)
-					}
-				} else {
-					fieldexists = false
-					fmt.Printf("Field navigation error before accessing %s\n", v)
-				}
-			}
-			if !fieldexists {
-				continue
-			}
-
-			if field.Kind() == reflect.Slice {
-				for i := 0; i < field.Len(); i++ {
-					if !StringInSlice(field.Index(i).String(), options[f]) {
-						options[f] = append(options[f], field.Index(i).String())
-					}
-				}
-			} else {
-				if !StringInSlice(field.String(), options[f]) {
-					options[f] = append(options[f], field.String())
-				}
-			}
+		if vendorMatch && productMatch {
+			cve.Vendor = ap.Vendor
+			cve.Product = ap.Product
+			cve.Versions = ap.Versions
+			return
 		}
 	}
-	response := CveResponse{Cves: filteredCves, Options: options}
-	return c.JSON(http.StatusOK, response)
-
 }
 
-func inspect(t reflect.Type, path string) []map[string]interface{} {
-	var fields []map[string]interface{}
+func (app *App) matchesFilter(cve *CVE, req *FilterRequest) bool {
+	// Year filter
+	if req.Year != nil && cve.Year != *req.Year {
+		return false
+	}
+	if req.YearFrom != nil && cve.Year < *req.YearFrom {
+		return false
+	}
+	if req.YearTo != nil && cve.Year > *req.YearTo {
+		return false
+	}
 
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		fieldType := field.Type
-		fieldPath := path + field.Name
-
-		// Check if the field is a struct and recurse
-		if fieldType.Kind() == reflect.Struct {
-			nestedFields := inspect(fieldType, fieldPath+".")
-			fields = append(fields, map[string]interface{}{
-				"name":   fieldPath,
-				"type":   fieldType.String(),
-				"nested": nestedFields,
-			})
-		} else {
-			fields = append(fields, map[string]interface{}{
-				"name": fieldPath,
-				"type": fieldType.String(),
-			})
+	// Vendor filter - support both single and multiple vendors (exact match, case-insensitive)
+	vendors := req.Vendors
+	if req.Vendor != "" && len(vendors) == 0 {
+		vendors = []string{req.Vendor}
+	}
+	if len(vendors) > 0 {
+		vendorMatch := false
+		for _, vendor := range vendors {
+			for _, ap := range cve.AffectedProducts {
+				if strings.EqualFold(ap.Vendor, vendor) {
+					vendorMatch = true
+					break
+				}
+			}
+			if vendorMatch {
+				break
+			}
+			// Fallback to primary vendor if no affected products
+			if len(cve.AffectedProducts) == 0 {
+				if strings.EqualFold(cve.Vendor, vendor) {
+					vendorMatch = true
+					break
+				}
+			}
+		}
+		if !vendorMatch {
+			return false
 		}
 	}
-	return fields
+
+	// Product filter - support both single and multiple products (exact match, case-insensitive)
+	products := req.Products
+	if req.Product != "" && len(products) == 0 {
+		products = []string{req.Product}
+	}
+	if len(products) > 0 {
+		productMatch := false
+		for _, product := range products {
+			for _, ap := range cve.AffectedProducts {
+				if strings.EqualFold(ap.Product, product) {
+					productMatch = true
+					break
+				}
+			}
+			if productMatch {
+				break
+			}
+			// Fallback to primary product if no affected products
+			if len(cve.AffectedProducts) == 0 {
+				if strings.EqualFold(cve.Product, product) {
+					productMatch = true
+					break
+				}
+			}
+		}
+		if !productMatch {
+			return false
+		}
+	}
+
+	// Severity filter (exact match)
+	if req.Severity != "" && !strings.EqualFold(cve.BaseSeverity, req.Severity) {
+		return false
+	}
+
+	// CWE filter
+	if req.CWE != "" && !strings.Contains(strings.ToLower(cve.CWE), strings.ToLower(req.CWE)) {
+		return false
+	}
+
+	// Score range
+	if req.ScoreMin != nil && cve.BaseScore < *req.ScoreMin {
+		return false
+	}
+	if req.ScoreMax != nil && cve.BaseScore > *req.ScoreMax {
+		return false
+	}
+
+	// CISA KEV filter
+	if req.InKEV != nil && *req.InKEV && !cve.InKEV {
+		return false
+	}
+
+	// Text search (in ID, description, title, vendor, product)
+	if req.Search != "" {
+		search := strings.ToLower(req.Search)
+		found := strings.Contains(strings.ToLower(cve.ID), search) ||
+			strings.Contains(strings.ToLower(cve.Description), search) ||
+			strings.Contains(strings.ToLower(cve.Title), search)
+
+		// Search across all affected products
+		if !found {
+			for _, ap := range cve.AffectedProducts {
+				if strings.Contains(strings.ToLower(ap.Vendor), search) ||
+					strings.Contains(strings.ToLower(ap.Product), search) {
+					found = true
+					break
+				}
+			}
+		}
+
+		// Fallback to primary vendor/product
+		if !found && len(cve.AffectedProducts) == 0 {
+			found = strings.Contains(strings.ToLower(cve.Vendor), search) ||
+				strings.Contains(strings.ToLower(cve.Product), search)
+		}
+
+		if !found {
+			return false
+		}
+	}
+
+	return true
 }
 
-func StringInSlice(a string, list []string) bool {
-	for _, b := range list {
-		if b == a {
-			return true
+func (app *App) sortCVEs(cves []CVE, sortBy string, desc bool) {
+	if sortBy == "" {
+		sortBy = "datePublished"
+		desc = true
+	}
+
+	sort.Slice(cves, func(i, j int) bool {
+		var less bool
+		switch sortBy {
+		case "id":
+			less = cves[i].ID < cves[j].ID
+		case "datePublished":
+			less = cves[i].DatePublished.Before(cves[j].DatePublished)
+		case "dateUpdated":
+			less = cves[i].DateUpdated.Before(cves[j].DateUpdated)
+		case "vendor":
+			less = cves[i].Vendor < cves[j].Vendor
+		case "product":
+			less = cves[i].Product < cves[j].Product
+		case "severity":
+			less = severityOrder(cves[i].BaseSeverity) < severityOrder(cves[j].BaseSeverity)
+		case "score":
+			less = cves[i].BaseScore < cves[j].BaseScore
+		default:
+			less = cves[i].DatePublished.Before(cves[j].DatePublished)
+		}
+		if desc {
+			return !less
+		}
+		return less
+	})
+}
+
+func severityOrder(s string) int {
+	switch strings.ToUpper(s) {
+	case "CRITICAL":
+		return 4
+	case "HIGH":
+		return 3
+	case "MEDIUM":
+		return 2
+	case "LOW":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (app *App) handleGetCVE(c echo.Context) error {
+	id := c.Param("id")
+
+	app.mu.RLock()
+	cve, exists := app.cveIndex[id]
+	app.mu.RUnlock()
+
+	if !exists {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "CVE not found"})
+	}
+
+	return c.JSON(http.StatusOK, cve)
+}
+
+func (app *App) handleGetStats(c echo.Context) error {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+
+	// Calculate vendor counts
+	vendorCounts := make(map[string]int)
+	severityCounts := make(map[string]int)
+	var minYear, maxYear int = 9999, 0
+	var lastUpdated time.Time
+
+	for _, cve := range app.cves {
+		vendorCounts[cve.Vendor]++
+		if cve.BaseSeverity != "" {
+			severityCounts[cve.BaseSeverity]++
+		}
+		if cve.Year > 0 && cve.Year < minYear {
+			minYear = cve.Year
+		}
+		if cve.Year > maxYear {
+			maxYear = cve.Year
+		}
+		if cve.DateUpdated.After(lastUpdated) {
+			lastUpdated = cve.DateUpdated
 		}
 	}
-	return false
+
+	// Get top 10 vendors
+	type kv struct {
+		Key   string
+		Value int
+	}
+	var sortedVendors []kv
+	for k, v := range vendorCounts {
+		if k != "" {
+			sortedVendors = append(sortedVendors, kv{k, v})
+		}
+	}
+	sort.Slice(sortedVendors, func(i, j int) bool {
+		return sortedVendors[i].Value > sortedVendors[j].Value
+	})
+
+	topVendors := make([]VendorCount, 0, 10)
+	for i := 0; i < len(sortedVendors) && i < 10; i++ {
+		topVendors = append(topVendors, VendorCount{
+			Vendor: sortedVendors[i].Key,
+			Count:  sortedVendors[i].Value,
+		})
+	}
+
+	stats := StatsResponse{
+		TotalCVEs:      len(app.cves),
+		LastUpdated:    lastUpdated,
+		YearRange:      [2]int{minYear, maxYear},
+		TopVendors:     topVendors,
+		SeverityCounts: severityCounts,
+	}
+
+	return c.JSON(http.StatusOK, stats)
+}
+
+func (app *App) handleGetOptions(c echo.Context) error {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+
+	options := FilterOptions{
+		Vendors:       app.vendors,
+		Products:      app.products,
+		Severities:    app.severities,
+		Years:         app.years,
+		CWEs:          app.cwes,
+		AttackVectors: []string{"NETWORK", "ADJACENT_NETWORK", "LOCAL", "PHYSICAL"},
+	}
+
+	return c.JSON(http.StatusOK, options)
+}
+
+// SearchOptionsRequest for searching vendors/products
+type SearchOptionsRequest struct {
+	Field   string   `json:"field"`
+	Search  string   `json:"search"`
+	Limit   int      `json:"limit"`
+	Vendor  string   `json:"vendor"`  // Optional: filter products by single vendor (legacy)
+	Vendors []string `json:"vendors"` // Optional: filter products by multiple vendors
+}
+
+func (app *App) handleSearchOptions(c echo.Context) error {
+	var req SearchOptionsRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	if req.Limit > 200 {
+		req.Limit = 200
+	}
+
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+
+	search := strings.ToLower(req.Search)
+	var results []string
+
+	// Combine single vendor with vendors array
+	vendors := req.Vendors
+	if req.Vendor != "" && len(vendors) == 0 {
+		vendors = []string{req.Vendor}
+	}
+
+	// Special handling for product field with vendor filter
+	if req.Field == "product" && len(vendors) > 0 {
+		productSet := make(map[string]bool)
+
+		// Find all products from CVEs that match any of the vendors
+		for _, cve := range app.cves {
+			for _, ap := range cve.AffectedProducts {
+				for _, vendor := range vendors {
+					vendorLower := strings.ToLower(vendor)
+					if strings.EqualFold(ap.Vendor, vendor) || strings.Contains(strings.ToLower(ap.Vendor), vendorLower) {
+						if ap.Product != "" {
+							productSet[ap.Product] = true
+						}
+						break
+					}
+				}
+			}
+		}
+
+		// Convert to sorted slice and filter by search
+		for product := range productSet {
+			if search == "" || strings.Contains(strings.ToLower(product), search) {
+				results = append(results, product)
+			}
+		}
+		sort.Strings(results)
+
+		// Apply limit
+		if len(results) > req.Limit {
+			results = results[:req.Limit]
+		}
+
+		return c.JSON(http.StatusOK, results)
+	}
+
+	// Standard handling for vendor, cwe, or product without vendor filter
+	var source []string
+	switch req.Field {
+	case "vendor":
+		source = app.vendors
+	case "product":
+		source = app.products
+	case "cwe":
+		source = app.cwes
+	default:
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid field"})
+	}
+
+	for _, item := range source {
+		if search == "" || strings.Contains(strings.ToLower(item), search) {
+			results = append(results, item)
+			if len(results) >= req.Limit {
+				break
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, results)
+}
+
+func (app *App) handleExportXLS(c echo.Context) error {
+	var req FilterRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+
+	// Remove pagination for export
+	req.Page = 1
+	req.PageSize = 100000 // Large limit for export
+
+	app.mu.RLock()
+
+	// Filter CVEs
+	var filtered []CVE
+	for _, cve := range app.cves {
+		if !app.matchesFilter(&cve, &req) {
+			continue
+		}
+		filtered = append(filtered, cve)
+	}
+	app.mu.RUnlock()
+
+	// Sort
+	app.sortCVEs(filtered, req.SortBy, req.SortDesc)
+
+	// Limit export to 10000 rows
+	if len(filtered) > 10000 {
+		filtered = filtered[:10000]
+	}
+
+	// Create Excel file
+	f := excelize.NewFile()
+	defer f.Close()
+
+	sheetName := "CVEs"
+	f.SetSheetName("Sheet1", sheetName)
+
+	// Headers
+	headers := []string{"CVE ID", "Year", "Vendor", "Product", "Title", "Severity", "Score", "Attack Vector", "CWE", "Published", "Description"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue(sheetName, cell, h)
+	}
+
+	// Style for header
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font: &excelize.Font{Bold: true, Color: "#FFFFFF"},
+		Fill: excelize.Fill{Type: "pattern", Color: []string{"#4472C4"}, Pattern: 1},
+	})
+	f.SetRowStyle(sheetName, 1, 1, headerStyle)
+
+	// Data rows
+	for i, cve := range filtered {
+		row := i + 2
+		f.SetCellValue(sheetName, cellName(1, row), cve.ID)
+		f.SetCellValue(sheetName, cellName(2, row), cve.Year)
+		f.SetCellValue(sheetName, cellName(3, row), cve.Vendor)
+		f.SetCellValue(sheetName, cellName(4, row), cve.Product)
+		f.SetCellValue(sheetName, cellName(5, row), cve.Title)
+		f.SetCellValue(sheetName, cellName(6, row), cve.BaseSeverity)
+		f.SetCellValue(sheetName, cellName(7, row), cve.BaseScore)
+		f.SetCellValue(sheetName, cellName(8, row), cve.AttackVector)
+		f.SetCellValue(sheetName, cellName(9, row), cve.CWE)
+		f.SetCellValue(sheetName, cellName(10, row), cve.DatePublished.Format("2006-01-02"))
+
+		// Truncate description for Excel
+		desc := cve.Description
+		if len(desc) > 500 {
+			desc = desc[:500] + "..."
+		}
+		f.SetCellValue(sheetName, cellName(11, row), desc)
+	}
+
+	// Auto-fit columns
+	for i := range headers {
+		col, _ := excelize.ColumnNumberToName(i + 1)
+		f.SetColWidth(sheetName, col, col, 20)
+	}
+
+	// Generate filename with timestamp
+	filename := "cve_export_" + time.Now().Format("20060102_150405") + ".xlsx"
+
+	c.Response().Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Response().Header().Set("Content-Disposition", "attachment; filename="+filename)
+
+	return f.Write(c.Response().Writer)
+}
+
+func cellName(col, row int) string {
+	name, _ := excelize.CoordinatesToCellName(col, row)
+	return name
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

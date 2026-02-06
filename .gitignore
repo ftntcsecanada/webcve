@@ -1,2 +1,5 @@
 frontend/node-modules
+frontend/node_modules
 cves
+cve_cache.gob
+kev
