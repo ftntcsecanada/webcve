@@ -584,6 +584,33 @@ function getSeverityType(severity) {
   return colors[severity] || "default";
 }
 
+// Format last update time as relative
+function formatLastUpdate(dateString) {
+  if (!dateString) return "Unknown";
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
+
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+// Check if data is recent (less than 8 days old)
+const isDataRecent = computed(() => {
+  if (!stats.value?.lastDataUpdate) return true;
+  const date = new Date(stats.value.lastDataUpdate);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffDays = diffMs / (1000 * 60 * 60 * 24);
+  return diffDays < 8;
+});
+
 // Initialize
 onMounted(() => {
   fetchCVEs();
@@ -599,9 +626,21 @@ import { h } from "vue";
     <n-layout-header style="padding: 16px 24px; background: #fff; border-bottom: 1px solid #e8e8e8">
       <n-space justify="space-between" align="center">
         <n-h2 style="margin: 0">CVE Database Browser</n-h2>
-        <n-space>
+        <n-space align="center">
           <n-statistic v-if="stats" label="Total CVEs" :value="stats.totalCves.toLocaleString()" />
+          <n-statistic v-if="stats && stats.totalKev" label="In KEV" :value="stats.totalKev.toLocaleString()" />
           <n-statistic v-if="total > 0" label="Filtered" :value="total.toLocaleString()" />
+          <n-tooltip v-if="stats && stats.lastDataUpdate">
+            <template #trigger>
+              <n-tag size="small" :type="isDataRecent ? 'success' : 'warning'" style="cursor: help">
+                Data: {{ formatLastUpdate(stats.lastDataUpdate) }}
+              </n-tag>
+            </template>
+            <div>
+              <div>Last update: {{ new Date(stats.lastDataUpdate).toLocaleString() }}</div>
+              <div v-if="stats.nextUpdateIn">Next update in: {{ stats.nextUpdateIn }}</div>
+            </div>
+          </n-tooltip>
         </n-space>
       </n-space>
     </n-layout-header>

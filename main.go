@@ -1,9 +1,11 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -200,7 +202,16 @@ const (
 	CacheVersion = 4 // Incremented to force cache rebuild with KEV details
 	CachePath    = "cve_cache.gob"
 	CVEDir       = "cves"
+	KEVDir       = "kev"
 	KEVPath      = "kev/known_exploited_vulnerabilities.json"
+
+	// Download URLs
+	KEVDownloadURL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+	// CVE bulk download - using the GitHub releases zip
+	CVEReleasesAPI = "https://api.github.com/repos/CVEProject/cvelistV5/releases/latest"
+
+	// Update interval
+	UpdateInterval = 7 * 24 * time.Hour // Weekly updates
 )
 
 // App holds the application state
@@ -216,6 +227,9 @@ type App struct {
 	severities []string
 	years      []int
 	cwes       []string
+
+	// Update tracking
+	lastDataUpdate time.Time
 }
 
 // FilterRequest represents incoming filter parameters
@@ -269,11 +283,14 @@ type FilterOptions struct {
 
 // StatsResponse provides database statistics
 type StatsResponse struct {
-	TotalCVEs      int            `json:"totalCves"`
-	LastUpdated    time.Time      `json:"lastUpdated"`
-	YearRange      [2]int         `json:"yearRange"`
-	TopVendors     []VendorCount  `json:"topVendors"`
-	SeverityCounts map[string]int `json:"severityCounts"`
+	TotalCVEs        int            `json:"totalCves"`
+	LastUpdated      time.Time      `json:"lastUpdated"`
+	LastDataUpdate   time.Time      `json:"lastDataUpdate"`
+	NextUpdateIn     string         `json:"nextUpdateIn"`
+	YearRange        [2]int         `json:"yearRange"`
+	TopVendors       []VendorCount  `json:"topVendors"`
+	SeverityCounts   map[string]int `json:"severityCounts"`
+	TotalKEV         int            `json:"totalKev"`
 }
 
 type VendorCount struct {
@@ -285,6 +302,12 @@ func main() {
 	app := &App{
 		cveIndex: make(map[string]*CVE),
 		kevIndex: make(map[string]*KEVEntry),
+	}
+
+	// Check and download data if missing
+	if err := app.checkAndDownloadData(); err != nil {
+		fmt.Printf("Error checking/downloading data: %v\n", err)
+		// Continue anyway, may have partial data
 	}
 
 	// Load CISA KEV catalog first
@@ -303,6 +326,13 @@ func main() {
 	// Build filter option caches
 	app.buildFilterCaches()
 
+	// Set initial last update time from cache file or current time
+	if info, err := os.Stat(CachePath); err == nil {
+		app.lastDataUpdate = info.ModTime()
+	} else {
+		app.lastDataUpdate = time.Now()
+	}
+
 	// Count KEV matches
 	kevCount := 0
 	for _, cve := range app.cves {
@@ -311,6 +341,9 @@ func main() {
 		}
 	}
 	fmt.Printf("Loaded %d CVEs (%d in CISA KEV)\n", len(app.cves), kevCount)
+
+	// Start the background update scheduler
+	app.startUpdateScheduler()
 
 	// Setup Echo router
 	e := echo.New()
@@ -447,6 +480,335 @@ func (app *App) applyKEVStatus() {
 			app.cves[i].KEVNotes = kevEntry.Notes
 		}
 	}
+}
+
+// downloadKEV downloads the CISA KEV catalog
+func (app *App) downloadKEV() error {
+	fmt.Println("Downloading CISA KEV catalog...")
+
+	// Create KEV directory if it doesn't exist
+	if err := os.MkdirAll(KEVDir, 0755); err != nil {
+		return fmt.Errorf("failed to create KEV directory: %w", err)
+	}
+
+	// Download the JSON file
+	resp, err := http.Get(KEVDownloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download KEV catalog: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download KEV catalog: HTTP %d", resp.StatusCode)
+	}
+
+	// Create the output file
+	outFile, err := os.Create(KEVPath)
+	if err != nil {
+		return fmt.Errorf("failed to create KEV file: %w", err)
+	}
+	defer outFile.Close()
+
+	// Copy the response body to the file
+	written, err := io.Copy(outFile, resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to write KEV file: %w", err)
+	}
+
+	fmt.Printf("Downloaded KEV catalog: %d bytes\n", written)
+	return nil
+}
+
+// GitHubRelease represents a GitHub release response
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Assets  []struct {
+		Name               string `json:"name"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+		Size               int64  `json:"size"`
+	} `json:"assets"`
+}
+
+// downloadCVEs downloads the CVE database from GitHub releases
+func (app *App) downloadCVEs() error {
+	fmt.Println("Downloading CVE database from GitHub...")
+
+	// Get the latest release info
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest("GET", CVEReleasesAPI, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "webcve-downloader")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to get release info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to get release info: HTTP %d", resp.StatusCode)
+	}
+
+	var release GitHubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return fmt.Errorf("failed to parse release info: %w", err)
+	}
+
+	// Find the "all CVEs" zip file (the largest one, typically named with _all_CVEs)
+	var downloadURL string
+	var downloadSize int64
+	for _, asset := range release.Assets {
+		if strings.Contains(asset.Name, "all_CVEs") && strings.HasSuffix(asset.Name, ".zip") {
+			downloadURL = asset.BrowserDownloadURL
+			downloadSize = asset.Size
+			break
+		}
+	}
+
+	if downloadURL == "" {
+		// Fallback: get the largest zip file
+		for _, asset := range release.Assets {
+			if strings.HasSuffix(asset.Name, ".zip") && asset.Size > downloadSize {
+				downloadURL = asset.BrowserDownloadURL
+				downloadSize = asset.Size
+			}
+		}
+	}
+
+	if downloadURL == "" {
+		return fmt.Errorf("no suitable CVE zip file found in release %s", release.TagName)
+	}
+
+	fmt.Printf("Found release %s, downloading %.2f MB...\n", release.TagName, float64(downloadSize)/(1024*1024))
+
+	// Download the zip file to a temp location
+	tempZip := filepath.Join(os.TempDir(), "cve_download.zip")
+	if err := downloadFile(downloadURL, tempZip); err != nil {
+		return fmt.Errorf("failed to download CVE zip: %w", err)
+	}
+	defer os.Remove(tempZip)
+
+	// Remove existing CVE directory
+	if err := os.RemoveAll(CVEDir); err != nil {
+		return fmt.Errorf("failed to remove old CVE directory: %w", err)
+	}
+
+	// Create fresh CVE directory
+	if err := os.MkdirAll(CVEDir, 0755); err != nil {
+		return fmt.Errorf("failed to create CVE directory: %w", err)
+	}
+
+	// Extract the zip file
+	fmt.Println("Extracting CVE database...")
+	if err := extractZip(tempZip, CVEDir); err != nil {
+		return fmt.Errorf("failed to extract CVE zip: %w", err)
+	}
+
+	fmt.Println("CVE database download complete")
+	return nil
+}
+
+// downloadFile downloads a file from URL to the specified path
+func downloadFile(url, filepath string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+// extractZip extracts a zip file to the specified directory
+func extractZip(zipPath, destDir string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	// Count files for progress
+	totalFiles := len(reader.File)
+	extracted := 0
+
+	for _, file := range reader.File {
+		// Skip the root directory in the zip (usually cvelistV5-main or similar)
+		parts := strings.SplitN(file.Name, "/", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		relativePath := parts[1]
+		if relativePath == "" {
+			continue
+		}
+
+		destPath := filepath.Join(destDir, relativePath)
+
+		// Security check: ensure path is within destDir
+		if !strings.HasPrefix(destPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			continue
+		}
+
+		if file.FileInfo().IsDir() {
+			os.MkdirAll(destPath, 0755)
+			continue
+		}
+
+		// Create parent directories
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+
+		// Extract file
+		srcFile, err := file.Open()
+		if err != nil {
+			return err
+		}
+
+		destFile, err := os.Create(destPath)
+		if err != nil {
+			srcFile.Close()
+			return err
+		}
+
+		_, err = io.Copy(destFile, srcFile)
+		srcFile.Close()
+		destFile.Close()
+
+		if err != nil {
+			return err
+		}
+
+		extracted++
+		if extracted%50000 == 0 {
+			fmt.Printf("Extracted %d/%d files...\n", extracted, totalFiles)
+		}
+	}
+
+	fmt.Printf("Extracted %d files\n", extracted)
+	return nil
+}
+
+// checkAndDownloadData checks if data exists and downloads if needed
+func (app *App) checkAndDownloadData() error {
+	kevExists := false
+	cveExists := false
+
+	// Check if KEV file exists
+	if _, err := os.Stat(KEVPath); err == nil {
+		kevExists = true
+	}
+
+	// Check if CVE directory exists and has files
+	if info, err := os.Stat(CVEDir); err == nil && info.IsDir() {
+		// Check if there are any JSON files
+		files := app.findAllCVEFiles()
+		cveExists = len(files) > 0
+	}
+
+	// Download missing data
+	if !kevExists {
+		fmt.Println("KEV catalog not found, downloading...")
+		if err := app.downloadKEV(); err != nil {
+			return fmt.Errorf("failed to download KEV: %w", err)
+		}
+	}
+
+	if !cveExists {
+		fmt.Println("CVE database not found, downloading...")
+		if err := app.downloadCVEs(); err != nil {
+			return fmt.Errorf("failed to download CVEs: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// startUpdateScheduler starts a background goroutine that updates data weekly
+func (app *App) startUpdateScheduler() {
+	go func() {
+		ticker := time.NewTicker(UpdateInterval)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			fmt.Println("Starting scheduled data update...")
+			app.performUpdate()
+		}
+	}()
+	fmt.Printf("Update scheduler started (interval: %v)\n", UpdateInterval)
+}
+
+// performUpdate downloads new data and reloads the application state
+func (app *App) performUpdate() {
+	updateSuccess := false
+
+	// Download KEV
+	if err := app.downloadKEV(); err != nil {
+		fmt.Printf("Error updating KEV catalog: %v\n", err)
+	} else {
+		// Reload KEV data
+		app.mu.Lock()
+		app.kevIndex = make(map[string]*KEVEntry)
+		if err := app.loadKEV(); err != nil {
+			fmt.Printf("Error reloading KEV catalog: %v\n", err)
+		} else {
+			fmt.Printf("Reloaded %d KEV entries\n", len(app.kevIndex))
+			updateSuccess = true
+		}
+		// Reapply KEV status to existing CVEs
+		app.applyKEVStatus()
+		app.mu.Unlock()
+	}
+
+	// Download CVEs
+	if err := app.downloadCVEs(); err != nil {
+		fmt.Printf("Error updating CVE database: %v\n", err)
+	} else {
+		// Remove old cache to force rebuild
+		os.Remove(CachePath)
+
+		// Reload CVEs
+		app.mu.Lock()
+		app.cves = nil
+		app.cveIndex = make(map[string]*CVE)
+		if err := app.loadCVEs(); err != nil {
+			fmt.Printf("Error reloading CVE database: %v\n", err)
+		} else {
+			app.buildFilterCaches()
+			kevCount := 0
+			for _, cve := range app.cves {
+				if cve.InKEV {
+					kevCount++
+				}
+			}
+			fmt.Printf("Reloaded %d CVEs (%d in CISA KEV)\n", len(app.cves), kevCount)
+			updateSuccess = true
+		}
+		app.mu.Unlock()
+	}
+
+	// Update the last update timestamp if successful
+	if updateSuccess {
+		app.mu.Lock()
+		app.lastDataUpdate = time.Now()
+		app.mu.Unlock()
+	}
+
+	fmt.Println("Scheduled update complete")
 }
 
 func (app *App) loadCache() (*Cache, error) {
@@ -1202,12 +1564,39 @@ func (app *App) handleGetStats(c echo.Context) error {
 		})
 	}
 
+	// Calculate time until next update
+	nextUpdate := app.lastDataUpdate.Add(UpdateInterval)
+	timeUntilNext := time.Until(nextUpdate)
+	var nextUpdateIn string
+	if timeUntilNext > 0 {
+		days := int(timeUntilNext.Hours() / 24)
+		hours := int(timeUntilNext.Hours()) % 24
+		if days > 0 {
+			nextUpdateIn = fmt.Sprintf("%dd %dh", days, hours)
+		} else {
+			nextUpdateIn = fmt.Sprintf("%dh", hours)
+		}
+	} else {
+		nextUpdateIn = "soon"
+	}
+
+	// Count KEV entries
+	kevCount := 0
+	for _, cve := range app.cves {
+		if cve.InKEV {
+			kevCount++
+		}
+	}
+
 	stats := StatsResponse{
 		TotalCVEs:      len(app.cves),
 		LastUpdated:    lastUpdated,
+		LastDataUpdate: app.lastDataUpdate,
+		NextUpdateIn:   nextUpdateIn,
 		YearRange:      [2]int{minYear, maxYear},
 		TopVendors:     topVendors,
 		SeverityCounts: severityCounts,
+		TotalKEV:       kevCount,
 	}
 
 	return c.JSON(http.StatusOK, stats)

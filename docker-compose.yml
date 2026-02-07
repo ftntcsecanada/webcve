@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  webcve:
+    build: .
+    container_name: webcve
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - /data/webcve/cves:/app/cves:ro
+      - /data/webcve/kev:/app/kev:ro
+      - /data/webcve/cve_cache.gob:/app/cve_cache.gob
