@@ -3,3 +3,4 @@ frontend/node_modules
 cves
 cve_cache.gob
 kev
+settings.local.json
