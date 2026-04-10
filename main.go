@@ -591,12 +591,13 @@ func (app *App) downloadCVEs() error {
 	}
 	defer os.Remove(tempZip)
 
-	// Remove existing CVE directory
-	if err := os.RemoveAll(CVEDir); err != nil {
-		return fmt.Errorf("failed to remove old CVE directory: %w", err)
+	// Clear existing CVE directory contents (don't remove the dir itself — it may be a mount point)
+	entries, err := os.ReadDir(CVEDir)
+	if err == nil {
+		for _, entry := range entries {
+			os.RemoveAll(filepath.Join(CVEDir, entry.Name()))
+		}
 	}
-
-	// Create fresh CVE directory
 	if err := os.MkdirAll(CVEDir, 0755); err != nil {
 		return fmt.Errorf("failed to create CVE directory: %w", err)
 	}

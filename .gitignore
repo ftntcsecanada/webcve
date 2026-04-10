@@ -4,3 +4,5 @@ cves
 cve_cache.gob
 kev
 settings.local.json
+claude_ssh_key
+claude_ssh_key.pub
