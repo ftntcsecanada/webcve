@@ -591,6 +591,55 @@ func (app *App) downloadCVEs() error {
 	}
 	defer os.Remove(tempZip)
 
+	// Handle nested zip (e.g. all_CVEs.zip.zip contains cves.zip which has the actual data)
+	actualZip := tempZip
+	if strings.HasSuffix(downloadURL, ".zip.zip") {
+		fmt.Println("Detected nested zip, extracting inner archive...")
+		innerDir := filepath.Join(os.TempDir(), "cve_inner")
+		os.MkdirAll(innerDir, 0755)
+		defer os.RemoveAll(innerDir)
+		// Extract outer zip without stripping path components
+		outerReader, err := zip.OpenReader(tempZip)
+		if err != nil {
+			return fmt.Errorf("failed to open outer zip: %w", err)
+		}
+		for _, file := range outerReader.File {
+			if file.FileInfo().IsDir() {
+				continue
+			}
+			destPath := filepath.Join(innerDir, filepath.Base(file.Name))
+			srcFile, err := file.Open()
+			if err != nil {
+				outerReader.Close()
+				return fmt.Errorf("failed to open file in outer zip: %w", err)
+			}
+			destFile, err := os.Create(destPath)
+			if err != nil {
+				srcFile.Close()
+				outerReader.Close()
+				return fmt.Errorf("failed to create inner zip file: %w", err)
+			}
+			io.Copy(destFile, srcFile)
+			srcFile.Close()
+			destFile.Close()
+		}
+		outerReader.Close()
+		// Find the inner zip file
+		innerEntries, err := os.ReadDir(innerDir)
+		if err != nil {
+			return fmt.Errorf("failed to read inner zip dir: %w", err)
+		}
+		for _, e := range innerEntries {
+			if strings.HasSuffix(e.Name(), ".zip") {
+				actualZip = filepath.Join(innerDir, e.Name())
+				break
+			}
+		}
+		if actualZip == tempZip {
+			return fmt.Errorf("no inner zip found in nested archive")
+		}
+	}
+
 	// Clear existing CVE directory contents (don't remove the dir itself — it may be a mount point)
 	entries, err := os.ReadDir(CVEDir)
 	if err == nil {
@@ -604,7 +653,7 @@ func (app *App) downloadCVEs() error {
 
 	// Extract the zip file
 	fmt.Println("Extracting CVE database...")
-	if err := extractZip(tempZip, CVEDir); err != nil {
+	if err := extractZip(actualZip, CVEDir); err != nil {
 		return fmt.Errorf("failed to extract CVE zip: %w", err)
 	}
 
