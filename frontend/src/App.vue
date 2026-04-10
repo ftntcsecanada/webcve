@@ -29,8 +29,11 @@ import {
   NCollapse,
   NCollapseItem,
   NTooltip,
+  createDiscreteApi,
 } from "naive-ui";
-import { Download } from "@vicons/carbon";
+
+// Message provider for error feedback
+const { message } = createDiscreteApi(["message"]);
 
 // State
 const loading = ref(false);
@@ -42,7 +45,8 @@ const totalPages = ref(0);
 
 // Filter state
 const search = ref("");
-const yearFilter = ref(null);
+const yearFrom = ref(null);
+const yearTo = ref(null);
 const vendorFilter = ref([]);  // Changed to array for multi-select
 const productFilter = ref([]); // Changed to array for multi-select
 const severityFilter = ref(null);
@@ -52,6 +56,9 @@ const scoreMin = ref(null);
 const scoreMax = ref(null);
 const sortBy = ref("datePublished");
 const sortDesc = ref(true);
+
+// URL state sync - suppress fetch during init
+let suppressFetch = false;
 
 // Filter options
 const options = ref({
@@ -93,11 +100,6 @@ let searchTimeout = null;
 let vendorSearchTimeout = null;
 let productSearchTimeout = null;
 let cweSearchTimeout = null;
-
-// Year options for select
-const yearOptions = computed(() => {
-  return options.value.years.map((y) => ({ label: String(y), value: y }));
-});
 
 const severityOptions = computed(() => {
   const order = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
@@ -399,7 +401,8 @@ async function fetchCVEs() {
     };
 
     if (search.value) params.search = search.value;
-    if (yearFilter.value) params.year = yearFilter.value;
+    if (yearFrom.value) params.yearFrom = yearFrom.value;
+    if (yearTo.value) params.yearTo = yearTo.value;
     if (vendorFilter.value && vendorFilter.value.length > 0) params.vendors = vendorFilter.value;
     if (productFilter.value && productFilter.value.length > 0) params.products = productFilter.value;
     if (severityFilter.value) params.severity = severityFilter.value;
@@ -414,8 +417,10 @@ async function fetchCVEs() {
     totalPages.value = response.data.totalPages;
     options.value = response.data.options;
     yearCounts.value = response.data.yearCounts || [];
+    syncFiltersToURL();
   } catch (error) {
     console.error("Error fetching CVEs:", error);
+    message.error("Failed to load CVEs. Please try again.");
   } finally {
     loading.value = false;
   }
@@ -428,6 +433,7 @@ async function fetchStats() {
     stats.value = response.data;
   } catch (error) {
     console.error("Error fetching stats:", error);
+    message.error("Failed to load statistics.");
   }
 }
 
@@ -440,7 +446,8 @@ async function exportToXLS() {
     };
 
     if (search.value) params.search = search.value;
-    if (yearFilter.value) params.year = yearFilter.value;
+    if (yearFrom.value) params.yearFrom = yearFrom.value;
+    if (yearTo.value) params.yearTo = yearTo.value;
     if (vendorFilter.value && vendorFilter.value.length > 0) params.vendors = vendorFilter.value;
     if (productFilter.value && productFilter.value.length > 0) params.products = productFilter.value;
     if (severityFilter.value) params.severity = severityFilter.value;
@@ -463,6 +470,7 @@ async function exportToXLS() {
     window.URL.revokeObjectURL(url);
   } catch (error) {
     console.error("Error exporting:", error);
+    message.error("Failed to export data. Please try again.");
   }
 }
 
@@ -516,7 +524,8 @@ function handlePageSizeChange(newSize) {
 // Reset filters
 function resetFilters() {
   search.value = "";
-  yearFilter.value = null;
+  yearFrom.value = null;
+  yearTo.value = null;
   vendorFilter.value = [];
   productFilter.value = [];
   severityFilter.value = null;
@@ -543,8 +552,9 @@ watch(search, () => {
 
 // Watch for filter changes
 watch(
-  [yearFilter, productFilter, severityFilter, cweFilter, kevFilter, scoreMin, scoreMax],
+  [yearFrom, yearTo, productFilter, severityFilter, cweFilter, kevFilter, scoreMin, scoreMax],
   () => {
+    if (suppressFetch) return;
     page.value = 1;
     fetchCVEs();
   },
@@ -553,11 +563,12 @@ watch(
 
 // Watch vendor filter separately to reload products when vendor changes
 watch(vendorFilter, (newVendors, oldVendors) => {
+  if (suppressFetch) return;
   page.value = 1;
-  // Clear product filter when vendors change significantly
+  // Clear product filter when vendors are removed or cleared
   const oldLen = oldVendors?.length || 0;
   const newLen = newVendors?.length || 0;
-  if (oldLen > 0 && newLen !== oldLen) {
+  if (newLen < oldLen || newLen === 0) {
     productFilter.value = [];
   }
   // Reload product options for the new vendor(s)
@@ -611,8 +622,44 @@ const isDataRecent = computed(() => {
   return diffDays < 8;
 });
 
+// URL state sync
+function syncFiltersToURL() {
+  const params = new URLSearchParams();
+  if (search.value) params.set("q", search.value);
+  if (yearFrom.value) params.set("yf", yearFrom.value);
+  if (yearTo.value) params.set("yt", yearTo.value);
+  if (vendorFilter.value.length) params.set("v", vendorFilter.value.join(","));
+  if (productFilter.value.length) params.set("p", productFilter.value.join(","));
+  if (severityFilter.value) params.set("sev", severityFilter.value);
+  if (cweFilter.value) params.set("cwe", cweFilter.value);
+  if (kevFilter.value !== null) params.set("kev", kevFilter.value);
+  if (scoreMin.value !== null) params.set("smin", scoreMin.value);
+  if (scoreMax.value !== null) params.set("smax", scoreMax.value);
+  const qs = params.toString();
+  const newURL = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  window.history.replaceState(null, "", newURL);
+}
+
+function restoreFiltersFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.toString()) return;
+  suppressFetch = true;
+  if (params.has("q")) search.value = params.get("q");
+  if (params.has("yf")) yearFrom.value = parseInt(params.get("yf"));
+  if (params.has("yt")) yearTo.value = parseInt(params.get("yt"));
+  if (params.has("v")) vendorFilter.value = params.get("v").split(",");
+  if (params.has("p")) productFilter.value = params.get("p").split(",");
+  if (params.has("sev")) severityFilter.value = params.get("sev");
+  if (params.has("cwe")) cweFilter.value = params.get("cwe");
+  if (params.has("kev")) kevFilter.value = params.get("kev") === "true";
+  if (params.has("smin")) scoreMin.value = parseFloat(params.get("smin"));
+  if (params.has("smax")) scoreMax.value = parseFloat(params.get("smax"));
+  suppressFetch = false;
+}
+
 // Initialize
 onMounted(() => {
+  restoreFiltersFromURL();
   fetchCVEs();
   fetchStats();
 });
@@ -660,12 +707,26 @@ import { h } from "vue";
                   />
                 </n-gi>
                 <n-gi>
-                  <n-select
-                    v-model:value="yearFilter"
-                    :options="yearOptions"
-                    placeholder="Year"
-                    clearable
-                  />
+                  <n-space :size="4">
+                    <n-input-number
+                      v-model:value="yearFrom"
+                      placeholder="Year from"
+                      :min="1999"
+                      :max="yearTo || 2099"
+                      clearable
+                      style="flex: 1"
+                      size="medium"
+                    />
+                    <n-input-number
+                      v-model:value="yearTo"
+                      placeholder="Year to"
+                      :min="yearFrom || 1999"
+                      :max="2099"
+                      clearable
+                      style="flex: 1"
+                      size="medium"
+                    />
+                  </n-space>
                 </n-gi>
                 <n-gi>
                   <n-select

@@ -230,6 +230,9 @@ type App struct {
 
 	// Update tracking
 	lastDataUpdate time.Time
+
+	// Cached stats
+	cachedStats *StatsResponse
 }
 
 // FilterRequest represents incoming filter parameters
@@ -323,8 +326,9 @@ func main() {
 		return
 	}
 
-	// Build filter option caches
+	// Build filter option caches and stats
 	app.buildFilterCaches()
+	app.buildStatsCache()
 
 	// Set initial last update time from cache file or current time
 	if info, err := os.Stat(CachePath); err == nil {
@@ -333,14 +337,7 @@ func main() {
 		app.lastDataUpdate = time.Now()
 	}
 
-	// Count KEV matches
-	kevCount := 0
-	for _, cve := range app.cves {
-		if cve.InKEV {
-			kevCount++
-		}
-	}
-	fmt.Printf("Loaded %d CVEs (%d in CISA KEV)\n", len(app.cves), kevCount)
+	fmt.Printf("Loaded %d CVEs (%d in CISA KEV)\n", len(app.cves), app.cachedStats.TotalKEV)
 
 	// Start the background update scheduler
 	app.startUpdateScheduler()
@@ -839,13 +836,8 @@ func (app *App) performUpdate() {
 			fmt.Printf("Error reloading CVE database: %v\n", err)
 		} else {
 			app.buildFilterCaches()
-			kevCount := 0
-			for _, cve := range app.cves {
-				if cve.InKEV {
-					kevCount++
-				}
-			}
-			fmt.Printf("Reloaded %d CVEs (%d in CISA KEV)\n", len(app.cves), kevCount)
+			app.buildStatsCache()
+			fmt.Printf("Reloaded %d CVEs (%d in CISA KEV)\n", len(app.cves), app.cachedStats.TotalKEV)
 			updateSuccess = true
 		}
 		app.mu.Unlock()
@@ -1467,7 +1459,7 @@ func (app *App) matchesFilter(cve *CVE, req *FilterRequest) bool {
 	}
 
 	// CISA KEV filter
-	if req.InKEV != nil && *req.InKEV && !cve.InKEV {
+	if req.InKEV != nil && *req.InKEV != cve.InKEV {
 		return false
 	}
 
@@ -1522,7 +1514,7 @@ func (app *App) sortCVEs(cves []CVE, sortBy string, desc bool) {
 			less = cves[i].Vendor < cves[j].Vendor
 		case "product":
 			less = cves[i].Product < cves[j].Product
-		case "severity":
+		case "severity", "baseSeverity":
 			less = severityOrder(cves[i].BaseSeverity) < severityOrder(cves[j].BaseSeverity)
 		case "score":
 			less = cves[i].BaseScore < cves[j].BaseScore
@@ -1565,15 +1557,12 @@ func (app *App) handleGetCVE(c echo.Context) error {
 	return c.JSON(http.StatusOK, cve)
 }
 
-func (app *App) handleGetStats(c echo.Context) error {
-	app.mu.RLock()
-	defer app.mu.RUnlock()
-
-	// Calculate vendor counts
+func (app *App) buildStatsCache() {
 	vendorCounts := make(map[string]int)
 	severityCounts := make(map[string]int)
 	var minYear, maxYear int = 9999, 0
 	var lastUpdated time.Time
+	kevCount := 0
 
 	for _, cve := range app.cves {
 		vendorCounts[cve.Vendor]++
@@ -1589,9 +1578,11 @@ func (app *App) handleGetStats(c echo.Context) error {
 		if cve.DateUpdated.After(lastUpdated) {
 			lastUpdated = cve.DateUpdated
 		}
+		if cve.InKEV {
+			kevCount++
+		}
 	}
 
-	// Get top 10 vendors
 	type kv struct {
 		Key   string
 		Value int
@@ -1614,39 +1605,41 @@ func (app *App) handleGetStats(c echo.Context) error {
 		})
 	}
 
-	// Calculate time until next update
-	nextUpdate := app.lastDataUpdate.Add(UpdateInterval)
-	timeUntilNext := time.Until(nextUpdate)
-	var nextUpdateIn string
-	if timeUntilNext > 0 {
-		days := int(timeUntilNext.Hours() / 24)
-		hours := int(timeUntilNext.Hours()) % 24
-		if days > 0 {
-			nextUpdateIn = fmt.Sprintf("%dd %dh", days, hours)
-		} else {
-			nextUpdateIn = fmt.Sprintf("%dh", hours)
-		}
-	} else {
-		nextUpdateIn = "soon"
-	}
-
-	// Count KEV entries
-	kevCount := 0
-	for _, cve := range app.cves {
-		if cve.InKEV {
-			kevCount++
-		}
-	}
-
-	stats := StatsResponse{
+	app.cachedStats = &StatsResponse{
 		TotalCVEs:      len(app.cves),
 		LastUpdated:    lastUpdated,
 		LastDataUpdate: app.lastDataUpdate,
-		NextUpdateIn:   nextUpdateIn,
 		YearRange:      [2]int{minYear, maxYear},
 		TopVendors:     topVendors,
 		SeverityCounts: severityCounts,
 		TotalKEV:       kevCount,
+	}
+}
+
+func (app *App) handleGetStats(c echo.Context) error {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+
+	if app.cachedStats == nil {
+		return c.JSON(http.StatusOK, StatsResponse{})
+	}
+
+	// Copy cached stats and add dynamic fields
+	stats := *app.cachedStats
+	stats.LastDataUpdate = app.lastDataUpdate
+
+	nextUpdate := app.lastDataUpdate.Add(UpdateInterval)
+	timeUntilNext := time.Until(nextUpdate)
+	if timeUntilNext > 0 {
+		days := int(timeUntilNext.Hours() / 24)
+		hours := int(timeUntilNext.Hours()) % 24
+		if days > 0 {
+			stats.NextUpdateIn = fmt.Sprintf("%dd %dh", days, hours)
+		} else {
+			stats.NextUpdateIn = fmt.Sprintf("%dh", hours)
+		}
+	} else {
+		stats.NextUpdateIn = "soon"
 	}
 
 	return c.JSON(http.StatusOK, stats)
@@ -1800,7 +1793,8 @@ func (app *App) handleExportXLS(c echo.Context) error {
 	f.SetSheetName("Sheet1", sheetName)
 
 	// Headers
-	headers := []string{"CVE ID", "Year", "Vendor", "Product", "Title", "Severity", "Score", "Attack Vector", "CWE", "Published", "Description"}
+	headers := []string{"CVE ID", "Year", "Vendor", "Product", "Title", "Severity", "Score", "Attack Vector", "CVSS Vector", "CWE", "Published", "In KEV", "KEV Date Added", "KEV Due Date", "KEV Required Action", "KEV Ransomware", "Description"}
+	colWidths := []float64{16, 6, 18, 18, 30, 10, 7, 14, 40, 12, 12, 7, 14, 14, 40, 12, 60}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheetName, cell, h)
@@ -1824,21 +1818,30 @@ func (app *App) handleExportXLS(c echo.Context) error {
 		f.SetCellValue(sheetName, cellName(6, row), cve.BaseSeverity)
 		f.SetCellValue(sheetName, cellName(7, row), cve.BaseScore)
 		f.SetCellValue(sheetName, cellName(8, row), cve.AttackVector)
-		f.SetCellValue(sheetName, cellName(9, row), cve.CWE)
-		f.SetCellValue(sheetName, cellName(10, row), cve.DatePublished.Format("2006-01-02"))
-
-		// Truncate description for Excel
-		desc := cve.Description
-		if len(desc) > 500 {
-			desc = desc[:500] + "..."
+		f.SetCellValue(sheetName, cellName(9, row), cve.VectorString)
+		f.SetCellValue(sheetName, cellName(10, row), cve.CWE)
+		f.SetCellValue(sheetName, cellName(11, row), cve.DatePublished.Format("2006-01-02"))
+		kevStr := ""
+		if cve.InKEV {
+			kevStr = "Yes"
 		}
-		f.SetCellValue(sheetName, cellName(11, row), desc)
+		f.SetCellValue(sheetName, cellName(12, row), kevStr)
+		f.SetCellValue(sheetName, cellName(13, row), cve.KEVDateAdded)
+		f.SetCellValue(sheetName, cellName(14, row), cve.KEVDueDate)
+		f.SetCellValue(sheetName, cellName(15, row), cve.KEVRequiredAction)
+		f.SetCellValue(sheetName, cellName(16, row), cve.KEVKnownRansomwareCampaign)
+
+		desc := cve.Description
+		if len(desc) > 1000 {
+			desc = desc[:1000] + "..."
+		}
+		f.SetCellValue(sheetName, cellName(17, row), desc)
 	}
 
-	// Auto-fit columns
-	for i := range headers {
+	// Set column widths
+	for i, w := range colWidths {
 		col, _ := excelize.ColumnNumberToName(i + 1)
-		f.SetColWidth(sheetName, col, col, 20)
+		f.SetColWidth(sheetName, col, col, w)
 	}
 
 	// Generate filename with timestamp
@@ -1855,9 +1858,3 @@ func cellName(col, row int) string {
 	return name
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
