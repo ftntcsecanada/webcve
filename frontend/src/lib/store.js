@@ -59,7 +59,7 @@ export const state = reactive({
   pageSize: 50,
   selectedId: null,
   // Vendor comparison view
-  vendor: { sort: "kev", desc: true, min: 25, query: "" },
+  vendor: { sort: "kev", desc: true, min: 25, query: "", by: "vendor", mode: "compare", days: 90 },
 });
 
 export function vendorRequest() {
@@ -69,8 +69,13 @@ export function vendorRequest() {
     desc: state.vendor.desc,
     minCves: state.vendor.min,
     query: state.vendor.query,
+    groupBy: state.vendor.by,
     limit: 200,
   };
+}
+
+export function radarRequest() {
+  return { vendors: state.filters.vendors, days: state.vendor.days };
 }
 
 export const results = reactive({
@@ -303,6 +308,9 @@ function toQuery(view, f, sort, extra = {}) {
     }
     if (vv.min !== 25) p.set("vmin", vv.min);
     if (vv.query) p.set("vq", vv.query);
+    if (vv.by !== "vendor") p.set("vby", vv.by);
+    if (vv.mode !== "compare") p.set("vmode", vv.mode);
+    if (vv.days !== 90) p.set("vdays", vv.days);
   }
   return p.toString();
 }
@@ -317,6 +325,9 @@ export function fromQuery(qs) {
     state.vendor.desc = p.get("vd") !== "asc";
     state.vendor.min = parseInt(p.get("vmin")) || 25;
     state.vendor.query = p.get("vq") || "";
+    state.vendor.by = p.get("vby") === "product" ? "product" : "vendor";
+    state.vendor.mode = p.get("vmode") === "radar" ? "radar" : "compare";
+    state.vendor.days = parseInt(p.get("vdays")) || 90;
   }
   f.q = p.get("q") || "";
   f.severities = p.getAll("sev");

@@ -60,6 +60,15 @@ export const GLOSSARY = {
   "Overdue KEV": "KEV entries past CISA's remediation due date. All due dates eventually pass; this mostly reflects how long a vendor has had exploited flaws.",
   "Days to KEV": "Median days between a CVE's publication and CISA adding it to KEV. Lower means this vendor's flaws get exploited faster after disclosure (0 = already exploited when published).",
   "Top weaknesses": "The vendor's most frequent CWE weakness types.",
+  "Self-published":
+    "Share of CVEs the vendor published itself as a CVE Numbering Authority (CNA). High means the vendor discloses its own flaws instead of leaving it to researchers or third parties. Mature security programs disclose more, which raises raw CVE counts.",
+  "Exploited at disclosure":
+    "KEV entries listed by CISA within a day of the CVE's publication (or before it). Often these are flaws disclosed in response to attacks already under way, so it reflects both how attackers target the product and how quickly the vendor publishes once it learns of exploitation.",
+  "CVSS vs NVD":
+    "Average difference between the vendor's own CVSS scores and NVD's independent scores for the same CVEs. Negative means the vendor scores its flaws lower than NVD; positive means higher. Only CVEs scored by both count.",
+  "Peer group": "A preset list of competing vendors in one market, so comparisons are like for like.",
+  "Product view": "Rank products instead of vendors. Customers deploy products, and large vendors span many unrelated product lines.",
+  Radar: "Recent dated events for the selected vendors: new KEV listings, Exploit-DB exploits, first GitHub PoCs and new critical CVEs.",
 };
 
 // CVSS metric labels used by parseCvssVector map onto glossary entries

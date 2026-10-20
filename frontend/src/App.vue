@@ -26,6 +26,7 @@ import {
 } from "./lib/store.js";
 import { SEVERITY_LABEL, ATTACK_VECTOR_LABEL, EXPLOIT_SOURCE_LABEL, fmtNum, fmtRelative, fmtDate, fmtEpss } from "./lib/format.js";
 import { explain } from "./lib/glossary.js";
+import { groupMatching } from "./lib/peers.js";
 
 const f = state.filters;
 const isKev = computed(() => state.view === "kev");
@@ -220,7 +221,9 @@ const chips = computed(() => {
       label: f.yearFrom === f.yearTo ? `${f.yearFrom}` : `${f.yearFrom || "…"}–${f.yearTo || "now"}`,
       remove: () => ((f.yearFrom = null), (f.yearTo = null)),
     });
-  f.vendors.forEach((v) => out.push({ key: `v-${v}`, label: v, prefix: "Vendor", remove: () => f.vendors.splice(f.vendors.indexOf(v), 1) }));
+  const group = groupMatching(f.vendors);
+  if (group) out.push({ key: "peers", label: group.label, prefix: "Peer group", cls: "kev", remove: () => (f.vendors = []) });
+  else f.vendors.forEach((v) => out.push({ key: `v-${v}`, label: v, prefix: "Vendor", remove: () => f.vendors.splice(f.vendors.indexOf(v), 1) }));
   f.products.forEach((p) => out.push({ key: `p-${p}`, label: p, prefix: "Product", remove: () => f.products.splice(f.products.indexOf(p), 1) }));
   if (f.cwe) out.push({ key: "cwe", label: f.cwe, prefix: "CWE", remove: () => (f.cwe = "") });
   return out;
@@ -532,7 +535,7 @@ function closePopovers(e) {
           <button class="btn ghost sm" @click="resetFilters">Clear all</button>
         </div>
 
-        <VendorsView v-if="isVendors" />
+        <VendorsView v-if="isVendors" @open="openCve" />
 
         <div v-if="activeSaved && saved.active.newCount && !f.since && !isVendors" class="new-banner">
           <b class="num">{{ fmtNum(saved.active.newCount) }}</b> new in “{{ activeSaved.name }}” since {{ fmtDate(saved.active.previousSeen) }}

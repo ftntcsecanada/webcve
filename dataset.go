@@ -20,11 +20,14 @@ type Dataset struct {
 	// Normalized vendor/product keys per CVE (aligned with CVEs), for filtering
 	vendorKeys  [][]string
 	productKeys [][]string
+	// "vendor\x00product" pairs per CVE, for product-level comparison
+	pairKeys [][]string
 
 	// Option lists for autocomplete, most common first
 	vendors  []Option
 	products []Option
 	cwes     []Option
+	pairs    map[string]string // pair key -> "Vendor · Product" display name
 
 	search *SearchIndex
 	stats  StatsResponse
@@ -172,7 +175,7 @@ func applyNVD(cve *CVE, n *NVDInfo) {
 		cve.Scope, cve.ConfidentialityImpact, cve.IntegrityImpact, cve.AvailabilityImpact = "", "", "", ""
 		cve.ScoreSource = ""
 	}
-	cve.NVDStatus, cve.NVDProducts = "", nil
+	cve.NVDStatus, cve.NVDProducts, cve.NVDScore = "", nil, 0
 	if cve.CWEFromNVD {
 		cve.CWE, cve.CWEFromNVD = "", false
 	}
@@ -181,6 +184,7 @@ func applyNVD(cve *CVE, n *NVDInfo) {
 	}
 	cve.NVDStatus = n.Status
 	cve.NVDProducts = n.Products
+	cve.NVDScore = n.Score
 	if cve.BaseScore == 0 && n.Score > 0 {
 		cve.ScoreSource = "nvd"
 		cve.CvssVersion, cve.BaseScore, cve.BaseSeverity, cve.VectorString = n.Version, n.Score, n.Severity, n.Vector
@@ -206,6 +210,9 @@ func vectorAttackVector(v string) string {
 var corpSuffixes = []string{
 	"corporation", "corp", "incorporated", "inc", "limited", "ltd", "llc", "gmbh",
 	"co", "company", "plc", "ag", "sa", "srl", "bv", "oy", "ab", "pty", "kk",
+	// Generic trailing words, so "Juniper Networks", "Cisco Systems" and
+	// "Check Point Software Technologies" match "Juniper", "Cisco", "Check Point"
+	"networks", "systems", "technologies", "technology", "software", "labs", "lab",
 }
 
 // normalizeVendor folds case, punctuation and corporate suffixes so that
@@ -259,6 +266,9 @@ func (ds *Dataset) buildKeys() {
 	}
 	ds.vendorKeys = make([][]string, len(ds.CVEs))
 	ds.productKeys = make([][]string, len(ds.CVEs))
+	ds.pairKeys = make([][]string, len(ds.CVEs))
+	ds.pairs = map[string]string{}
+	pairSpelling := map[string]map[string]int{}
 	for i := range ds.CVEs {
 		cve := &ds.CVEs[i]
 		aps := cve.AffectedProducts
@@ -268,24 +278,53 @@ func (ds *Dataset) buildKeys() {
 		// NVD's CPE products make CVEs whose record says "n/a" findable by vendor.
 		// Only as a fallback: CPE data also lists platforms (e.g. Linux distros a
 		// third-party library ships on), which would misattribute CVEs to them.
+		fromRecord := len(aps)
 		if !hasRealVendor(aps) {
 			aps = append(slices.Clip(aps), cve.NVDProducts...)
 		}
-		var vk, pk []string
-		for _, ap := range aps {
+		var vk, pk, pairs []string
+		for n, ap := range aps {
+			v, p := "", ""
 			if !isPlaceholderName(ap.Vendor) {
-				if k := normalizeVendor(ap.Vendor); k != "" && !contains(vk, k) {
-					vk = append(vk, in(k))
+				if v = normalizeVendor(ap.Vendor); v != "" && !contains(vk, v) {
+					vk = append(vk, in(v))
 				}
 			}
 			if !isPlaceholderName(ap.Product) {
-				if k := normalizeProduct(ap.Product); k != "" && !contains(pk, k) {
-					pk = append(pk, in(k))
+				if p = normalizeProduct(ap.Product); p != "" && !contains(pk, p) {
+					pk = append(pk, in(p))
 				}
+			}
+			if v != "" && p != "" {
+				key := v + "\x00" + p
+				if !contains(pairs, key) {
+					pairs = append(pairs, in(key))
+				}
+				m := pairSpelling[key]
+				if m == nil {
+					m = map[string]int{}
+					pairSpelling[key] = m
+				}
+				// NVD's lowercase CPE spellings only name a product when no record spells it
+				weight := 1
+				if n >= fromRecord {
+					weight = 0
+				}
+				m[strings.TrimSpace(ap.Vendor)+" · "+strings.TrimSpace(ap.Product)] += weight
 			}
 		}
 		ds.vendorKeys[i] = vk
 		ds.productKeys[i] = pk
+		ds.pairKeys[i] = pairs
+	}
+	for key, spellings := range pairSpelling {
+		best, bestN := "", -1
+		for name, n := range spellings {
+			if n > bestN || (n == bestN && name < best) {
+				best, bestN = name, n
+			}
+		}
+		ds.pairs[key] = best
 	}
 }
 

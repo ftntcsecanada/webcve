@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, computed } from "vue";
 import Icon from "./Icon.vue";
+import CveBrief from "./CveBrief.vue";
 import { state, fetchCve, fetchRelated, addUnique } from "../lib/store.js";
 import {
   SEVERITY_LABEL,
@@ -36,6 +37,7 @@ const copied = ref("");
 const scroller = ref(null);
 const showAllProducts = ref(false);
 const showAllEvidence = ref(false);
+const showBrief = ref(false);
 const related = ref(null);
 const epssHistory = ref([]);
 
@@ -206,8 +208,14 @@ const riskLabel = ["", "low", "med", "high"];
         <Icon :name="copied === 'link' ? 'check' : 'link'" :size="14" />
       </button>
       <span class="spacer" />
+      <button v-if="cve" v-tip="'One-page summary to print, save as PDF or paste into an email'" class="btn sm" @click="showBrief = true">
+        <Icon name="download" :size="13" /> Brief
+      </button>
       <button class="btn ghost sm icon" title="Close (Esc)" @click="emit('close')"><Icon name="x" /></button>
     </header>
+    <Teleport to="body">
+      <CveBrief v-if="showBrief && cve" :cve="cve" @close="showBrief = false" />
+    </Teleport>
 
     <div ref="scroller" class="d-body scroll-thin">
       <div v-if="error" class="d-error">{{ error }}</div>

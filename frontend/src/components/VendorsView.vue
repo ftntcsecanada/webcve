@@ -1,9 +1,40 @@
 <script setup>
-import { ref, watch, onMounted } from "vue";
+import { ref, watch, onMounted, computed } from "vue";
 import Icon from "./Icon.vue";
+import RadarView from "./RadarView.vue";
+import ComparisonBrief from "./ComparisonBrief.vue";
 import { state, vendorRequest, setView, activeFilterCount } from "../lib/store.js";
 import { fmtNum } from "../lib/format.js";
 import { explain } from "../lib/glossary.js";
+import { PEER_GROUPS, groupMatching } from "../lib/peers.js";
+
+const emit = defineEmits(["open"]);
+const showBrief = ref(false);
+
+const activeGroup = computed(() => groupMatching(state.filters.vendors));
+
+function applyGroup(g) {
+  state.filters.vendors = g ? [...g.vendors] : [];
+  state.filters.products = [];
+}
+
+const briefTitle = computed(() => {
+  if (activeGroup.value) return `${activeGroup.value.label}: ${state.vendor.by === "product" ? "products" : "vendors"} compared`;
+  if (state.filters.vendors.length) return `${state.filters.vendors.slice(0, 4).join(", ")}${state.filters.vendors.length > 4 ? " and others" : ""} compared`;
+  return "Vendor comparison";
+});
+
+const briefScope = computed(() => {
+  const f = state.filters;
+  const parts = [];
+  if (f.yearFrom || f.yearTo) parts.push(`CVEs published ${f.yearFrom || "…"}–${f.yearTo || "now"}`);
+  else parts.push("All published CVEs");
+  if (f.severities.length) parts.push(`severity ${f.severities.join("/").toLowerCase()}`);
+  if (f.cwe) parts.push(f.cwe);
+  if (state.vendor.min > 1) parts.push(`${state.vendor.by === "product" ? "products" : "vendors"} with at least ${state.vendor.min} CVEs`);
+  parts.push(`sorted by ${(COLUMNS.find((c) => c.key === state.vendor.sort)?.label || state.vendor.sort).toLowerCase()}`);
+  return parts.join(" · ");
+});
 
 const data = ref(null);
 const loading = ref(false);
@@ -39,7 +70,7 @@ async function load() {
 
 onMounted(load);
 watch(
-  () => [state.filters, state.vendor.sort, state.vendor.desc, state.vendor.min],
+  () => [state.filters, state.vendor.sort, state.vendor.desc, state.vendor.min, state.vendor.by],
   () => {
     clearTimeout(timer);
     timer = setTimeout(load, 80);
@@ -58,6 +89,7 @@ watch(
 const PRESETS = [
   ["kev", true, "Most exploited"],
   ["kevPct", true, "Highest exploited rate"],
+  ["zeroDayPct", true, "Most exploited at disclosure"],
   ["daysToKev", false, "Fastest to exploitation"],
   ["metasploit", true, "Most weaponized"],
   ["trend", true, "Fastest growing"],
@@ -76,6 +108,9 @@ const COLUMNS = [
   { key: "metasploit", label: "Metasploit", term: "Metasploit" },
   { key: "epssHigh", label: "EPSS ≥10%", term: "EPSS ≥ 10%" },
   { key: "daysToKev", label: "Days to KEV", term: "Days to KEV" },
+  { key: "zeroDayPct", label: "At disclosure", term: "Exploited at disclosure" },
+  { key: "selfPubPct", label: "Self-published", term: "Self-published" },
+  { key: "nvdDelta", label: "CVSS vs NVD", term: "CVSS vs NVD" },
 ];
 
 const MIN_OPTIONS = [1, 25, 100, 500];
@@ -94,8 +129,9 @@ function preset([key, desc]) {
   state.vendor.desc = desc;
 }
 
-function openVendor(name) {
-  state.filters.vendors = [name];
+function openRow(r) {
+  state.filters.vendors = [r.vendor || r.name];
+  state.filters.products = r.product ? [r.product] : [];
   setView("all");
 }
 
@@ -138,6 +174,39 @@ function colMax(key) {
 
 <template>
   <section class="vendors">
+    <div class="modebar">
+      <div class="seg big" role="tablist" aria-label="Vendor view mode">
+        <button role="tab" :aria-selected="state.vendor.mode === 'compare'" :class="{ on: state.vendor.mode === 'compare' }" @click="state.vendor.mode = 'compare'">
+          Comparison
+        </button>
+        <button
+          v-tip="explain('Radar')"
+          role="tab"
+          :aria-selected="state.vendor.mode === 'radar'"
+          :class="{ on: state.vendor.mode === 'radar' }"
+          @click="state.vendor.mode = 'radar'"
+        >
+          Recent activity
+        </button>
+      </div>
+      <div v-if="state.vendor.mode === 'compare'" class="seg big" role="group" aria-label="Group by">
+        <button :class="{ on: state.vendor.by === 'vendor' }" @click="state.vendor.by = 'vendor'">Vendors</button>
+        <button v-tip="explain('Product view')" :class="{ on: state.vendor.by === 'product' }" @click="state.vendor.by = 'product'">Products</button>
+      </div>
+    </div>
+
+    <div class="peers">
+      <span v-tip="explain('Peer group')" class="peers-label">Peer group</span>
+      <button :class="{ on: !state.filters.vendors.length }" @click="applyGroup(null)">All vendors</button>
+      <button v-for="g in PEER_GROUPS" :key="g.id" v-tip="g.vendors.join(', ')" :class="{ on: activeGroup?.id === g.id }" @click="applyGroup(g)">
+        {{ g.label }}
+      </button>
+      <span v-if="state.filters.vendors.length && !activeGroup" class="custom">Custom: {{ state.filters.vendors.length }} vendors</span>
+    </div>
+
+    <RadarView v-if="state.vendor.mode === 'radar'" @open="(id) => emit('open', id)" />
+
+    <template v-else>
     <div class="intro">
       <p>
         Compare vendors by how much is published about them and how often their flaws are exploited.
@@ -145,9 +214,19 @@ function colMax(key) {
           Counts follow product footprint and disclosure practice, so lean on the rates (KEV rate, exploit rate) and days to KEV
           when comparing vendors of different sizes.
           <template v-if="activeFilterCount()">Only CVEs matching your filters are counted.</template>
-          <template v-else>Use the filters to narrow by year, severity or weakness; pick vendors in the Vendor filter to compare just those.</template>
+          <template v-else>Use the filters to narrow by year, severity or weakness.</template>
         </span>
       </p>
+      <details class="method">
+        <summary>How to read this comparison fairly</summary>
+        <ul>
+          <li><b>Lead with rates and exploitation, not counts.</b> Vendors that run strong security programs publish more of their own flaws (see Self-published), which raises volume without making products less secure.</li>
+          <li><b>KEV rate</b> shows where attackers actually focus. <b>Days to KEV</b> and <b>At disclosure</b> show how quickly flaws get exploited; at-disclosure listings are often flaws published because attacks were already under way.</li>
+          <li><b>Compare like with like.</b> Use a peer group, and the Products view for multi-product vendors.</li>
+          <li><b>Mind small samples.</b> A vendor with 3 KEV entries can swing from 0% to 67% on one listing; keep the minimum CVE threshold sensible.</li>
+          <li><b>Not compared:</b> who found each flaw. CVE records name finders for some vendors (e.g. Palo Alto Networks, F5) and almost never for others (e.g. Fortinet, Cisco, Ivanti), so any comparison would be skewed.</li>
+        </ul>
+      </details>
     </div>
 
     <div class="controls">
@@ -178,11 +257,13 @@ function colMax(key) {
     <div class="table-card">
       <div class="meta-line">
         <span v-if="data">
-          <b class="num">{{ fmtNum(data.total) }}</b> vendors
+          <b class="num">{{ fmtNum(data.total) }}</b> {{ state.vendor.by === "product" ? "products" : "vendors" }}
           <span class="muted">· {{ fmtNum(data.matched) }} CVEs counted · {{ data.tookMs.toFixed(0) }} ms</span>
           <span v-if="data.total > data.vendors.length" class="muted"> · showing top {{ data.vendors.length }}</span>
         </span>
         <span v-if="loading" class="spinner" />
+        <span class="grow" />
+        <button v-if="data?.vendors.length" class="btn sm" @click="showBrief = true"><Icon name="download" :size="13" /> Brief</button>
       </div>
       <div class="scroll scroll-thin">
         <table :class="{ stale: loading }">
@@ -190,7 +271,7 @@ function colMax(key) {
             <tr>
               <th class="c-vendor">
                 <button :class="{ sorted: state.vendor.sort === 'name' }" @click="sortBy('name')">
-                  Vendor <Icon v-if="state.vendor.sort === 'name'" :name="state.vendor.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
+                  {{ state.vendor.by === "product" ? "Product" : "Vendor" }} <Icon v-if="state.vendor.sort === 'name'" :name="state.vendor.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
                 </button>
               </th>
               <th v-for="c in COLUMNS" :key="c.key" class="num-col">
@@ -205,7 +286,7 @@ function colMax(key) {
           <tbody v-if="data">
             <tr v-for="r in data.vendors" :key="r.key">
               <td class="c-vendor">
-                <button class="vname" :title="`Show ${r.name}'s CVEs`" @click="openVendor(r.name)">{{ r.name }}</button>
+                <button class="vname" :title="`Show ${r.name} CVEs`" @click="openRow(r)">{{ r.name }}</button>
               </td>
               <td class="num-col">
                 <div class="cell-cves">
@@ -247,6 +328,18 @@ function colMax(key) {
                 <template v-if="r.daysToKev >= 0">{{ fmtNum(r.daysToKev) }}<span class="unit">d</span></template>
                 <template v-else>—</template>
               </td>
+              <td class="num-col num" :class="{ zero: !r.kev }">
+                <template v-if="r.kev">{{ r.zeroDay }} <span class="unit">({{ pct(r.zeroDayPct) }})</span></template>
+                <template v-else>—</template>
+              </td>
+              <td class="num-col num">{{ pct(r.selfPubPct) }}</td>
+              <td
+                v-tip="r.nvdCompared ? `Across ${r.nvdCompared} CVEs scored by both` : 'No CVEs scored by both the vendor and NVD'"
+                class="num-col num"
+                :class="{ zero: !r.nvdCompared }"
+              >
+                {{ r.nvdCompared ? `${r.nvdDelta > 0 ? "+" : ""}${r.nvdDelta.toFixed(1)}` : "—" }}
+              </td>
               <td class="c-cwe">
                 <button
                   v-for="w in r.topWeaknesses"
@@ -267,10 +360,93 @@ function colMax(key) {
         <div v-if="!data && !error" class="empty">Loading…</div>
       </div>
     </div>
+    </template>
+
+    <ComparisonBrief
+      v-if="showBrief && data"
+      :rows="data.vendors"
+      :title="briefTitle"
+      :scope="briefScope"
+      :group-by="state.vendor.by"
+      :year-from="data.yearFrom"
+      :year-to="data.yearTo"
+      @close="showBrief = false"
+    />
   </section>
 </template>
 
 <style scoped>
+.modebar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.seg.big button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 550;
+}
+.peers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.peers-label {
+  margin-right: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  cursor: help;
+}
+.peers button {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.peers button:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.peers button.on {
+  background: var(--kev-soft);
+  border-color: transparent;
+  color: var(--kev-text);
+  font-weight: 600;
+}
+.custom {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.method {
+  margin: -6px 0 14px;
+  max-width: 900px;
+  font-size: 13px;
+}
+.method summary {
+  cursor: pointer;
+  color: var(--accent-text);
+  font-weight: 500;
+}
+.method ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+.grow {
+  flex: 1;
+}
 .intro p {
   margin: 0 0 14px;
   max-width: 900px;

@@ -59,6 +59,7 @@ func main() {
 	data.POST("/options/search", app.handleSearchOptions)
 	data.POST("/export", app.handleExport)
 	data.POST("/vendors", app.handleVendors)
+	data.POST("/radar", app.handleRadar)
 
 	addr := ":3000"
 	if p := os.Getenv("PORT"); p != "" {

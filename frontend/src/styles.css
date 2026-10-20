@@ -351,3 +351,38 @@ button {
 .v-tip.on {
   opacity: 1;
 }
+
+/* Briefs print on their own: hide the app, show the page */
+@media print {
+  body {
+    background: #fff !important;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .brief-overlay,
+  .brief-overlay * {
+    visibility: visible;
+  }
+  .brief-overlay {
+    position: absolute !important;
+    top: 0;
+    left: 0;
+    width: 100%;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: none !important;
+  }
+  .brief-overlay .no-print {
+    display: none !important;
+  }
+  .brief-overlay .page {
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+  }
+  @page {
+    margin: 14mm;
+  }
+}

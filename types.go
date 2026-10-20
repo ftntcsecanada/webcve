@@ -87,6 +87,7 @@ type CVE struct {
 	GitHubPoCs  int          `json:"githubPocs,omitempty"`  // total repos; Exploits keeps the most starred
 	ScoreSource string       `json:"scoreSource,omitempty"` // "nvd" when the CVSS fields came from NVD
 	NVDStatus   string       `json:"nvdStatus,omitempty"`
+	NVDScore    float64      `json:"nvdScore,omitempty"` // NVD's own score, kept even when the record has one
 	// Vendor/product pairs from NVD's CPE configurations
 	NVDProducts []AffectedProduct `json:"nvdProducts,omitempty"`
 	// Fixed package versions from OSV (GitHub advisories, language ecosystems, Linux distros)

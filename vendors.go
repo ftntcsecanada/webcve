@@ -13,8 +13,10 @@ import (
 
 // VendorRow aggregates one vendor's CVEs (within the current filters)
 type VendorRow struct {
-	Key  string `json:"key"`
-	Name string `json:"name"`
+	Key     string `json:"key"`
+	Name    string `json:"name"`
+	Vendor  string `json:"vendor"` // display vendor name (for product rows, the product's vendor)
+	Product string `json:"product,omitempty"`
 
 	CVEs       int `json:"cves"`
 	Critical   int `json:"critical"`
@@ -27,6 +29,13 @@ type VendorRow struct {
 	EPSSHigh   int `json:"epssHigh"` // EPSS >= 10%
 	Last12     int `json:"last12"`   // published in the last 12 months
 	Prev12     int `json:"prev12"`   // the 12 months before that
+	// Disclosure context
+	SelfPublished int     `json:"selfPublished"` // CVEs the vendor published as its own CNA
+	ZeroDay       int     `json:"zeroDay"`       // KEV entries exploited at or before disclosure
+	NVDCompared   int     `json:"nvdCompared"`   // CVEs scored by both the CNA and NVD
+	SelfPubPct    float64 `json:"selfPubPct"`
+	ZeroDayPct    float64 `json:"zeroDayPct"` // of KEV entries
+	NVDDelta      float64 `json:"nvdDelta"`   // mean (record score - NVD score); negative = scores itself lower
 
 	AvgScore      float64  `json:"avgScore"`
 	CritHighPct   float64  `json:"critHighPct"` // of scored CVEs
@@ -39,12 +48,15 @@ type VendorRow struct {
 	TopWeaknesses []string `json:"topWeaknesses"` // most common CWEs
 
 	scoreSum  float64
+	nvdDelta  float64
 	kevDays   []int
 	weakCount map[string]int
+	vendorKey string
 }
 
 type vendorsRequest struct {
 	FilterRequest
+	GroupBy string `json:"groupBy"` // vendor (default) or product
 	MinCVEs int    `json:"minCves"`
 	Sort    string `json:"sort"`
 	Desc    bool   `json:"desc"`
@@ -93,27 +105,45 @@ func (app *App) handleVendors(c echo.Context) error {
 	}
 	q := normalizeVendor(req.Query)
 
+	byProduct := req.GroupBy == "product"
 	rows := map[string]*VendorRow{}
 	matched := 0
 	for i := range ds.CVEs {
 		if ds.failedGroups(i, f) != 0 {
 			continue
 		}
-		matched++
 		cve := &ds.CVEs[i]
-		for _, k := range ds.vendorKeys[i] {
-			if (wantKeys != nil && !wantKeys[k]) || (q != "" && !strings.Contains(k, q)) {
+		counted := false
+		keys := ds.vendorKeys[i]
+		if byProduct {
+			keys = ds.pairKeys[i]
+		}
+		for _, k := range keys {
+			vk, pk, _ := strings.Cut(k, "\x00")
+			if (wantKeys != nil && !wantKeys[vk]) || (q != "" && !strings.Contains(vk, q) && !strings.Contains(pk, q)) {
 				continue
 			}
 			r := rows[k]
 			if r == nil {
-				r = &VendorRow{Key: k, Name: names[k], Years: make([]int, vendorYears), weakCount: map[string]int{}}
-				if r.Name == "" {
-					r.Name = k
+				r = &VendorRow{Key: k, vendorKey: vk, Years: make([]int, vendorYears), weakCount: map[string]int{}}
+				r.Vendor = names[vk]
+				if r.Vendor == "" {
+					r.Vendor = vk
+				}
+				r.Name = r.Vendor
+				if byProduct {
+					r.Name = ds.pairs[k]
+					if _, p, ok := strings.Cut(r.Name, " · "); ok {
+						r.Product = p
+					}
 				}
 				rows[k] = r
 			}
 			r.add(cve, yearFrom, cut12, cut24, today)
+			counted = true
+		}
+		if counted {
+			matched++
 		}
 	}
 
@@ -185,6 +215,33 @@ func (r *VendorRow) add(cve *CVE, yearFrom int, cut12, cut24 time.Time, today st
 	if cweNumRe.MatchString(cve.CWE) {
 		r.weakCount[cve.CWE]++
 	}
+	if assignerMatchesVendor(cve.AssignerOrg, r.vendorKey) {
+		r.SelfPublished++
+	}
+	if cve.InKEV && !cve.DatePublished.IsZero() {
+		// Listed in KEV within a day of publication (or before): exploited at disclosure
+		if added, err := time.Parse("2006-01-02", cve.KEVDateAdded); err == nil && added.Sub(cve.DatePublished) <= 24*time.Hour {
+			r.ZeroDay++
+		}
+	}
+	if cve.ScoreSource == "" && cve.BaseScore > 0 && cve.NVDScore > 0 {
+		r.NVDCompared++
+		r.nvdDelta += cve.BaseScore - cve.NVDScore
+	}
+}
+
+// assignerMatchesVendor reports whether the CNA that published a CVE is the
+// vendor itself ("palo_alto" publishing for Palo Alto Networks)
+func assignerMatchesVendor(assigner, vendorKey string) bool {
+	if assigner == "" || vendorKey == "" {
+		return false
+	}
+	a := normalizeVendor(strings.ReplaceAll(assigner, "_", " "))
+	if a == vendorKey || strings.HasPrefix(vendorKey, a+" ") || strings.HasPrefix(a, vendorKey+" ") {
+		return true
+	}
+	// "checkpoint" publishes for "Check Point"
+	return strings.ReplaceAll(a, " ", "") == strings.ReplaceAll(vendorKey, " ", "")
 }
 
 func (r *VendorRow) finish() {
@@ -198,6 +255,11 @@ func (r *VendorRow) finish() {
 		r.AvgScore = r.scoreSum / float64(r.Scored)
 	}
 	r.CritHighPct = pct(r.Critical+r.High, r.Scored)
+	r.SelfPubPct = pct(r.SelfPublished, r.CVEs)
+	r.ZeroDayPct = pct(r.ZeroDay, r.KEV)
+	if r.NVDCompared > 0 {
+		r.NVDDelta = r.nvdDelta / float64(r.NVDCompared)
+	}
 	r.KEVPct = pct(r.KEV, r.CVEs)
 	r.ExploitPct = pct(r.Exploit, r.CVEs)
 	switch {
@@ -265,6 +327,14 @@ func sortVendorRows(rows []*VendorRow, by string, desc bool) {
 			return float64(r.DaysToKEV)
 		case "kevOverdue":
 			return float64(r.KEVOverdue)
+		case "selfPubPct":
+			return r.SelfPubPct
+		case "zeroDay":
+			return float64(r.ZeroDay)
+		case "zeroDayPct":
+			return r.ZeroDayPct
+		case "nvdDelta":
+			return r.NVDDelta
 		default:
 			return float64(r.CVEs)
 		}

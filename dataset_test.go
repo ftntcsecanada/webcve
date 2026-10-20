@@ -52,12 +52,17 @@ func ids(ds *Dataset, req FilterRequest) []string {
 
 func TestNormalizeVendor(t *testing.T) {
 	cases := map[string]string{
-		"Microsoft Corporation": "microsoft",
-		"microsoft":             "microsoft",
-		"Fortinet, Inc.":        "fortinet",
-		"Hikvision Co., Ltd.":   "hikvision",
-		"AT&T":                  "at&t",
-		"Co":                    "co", // never strip down to nothing
+		"Microsoft Corporation":                  "microsoft",
+		"microsoft":                              "microsoft",
+		"Fortinet, Inc.":                         "fortinet",
+		"Hikvision Co., Ltd.":                    "hikvision",
+		"AT&T":                                   "at&t",
+		"Co":                                     "co", // never strip down to nothing
+		"Cisco Systems, Inc.":                    "cisco",
+		"Check Point Software Technologies Ltd.": "check point",
+		"Palo Alto Networks":                     "palo alto",
+		"Kaspersky Lab":                          "kaspersky",
+		"Networks":                               "networks",
 	}
 	for in, want := range cases {
 		if got := normalizeVendor(in); got != want {
