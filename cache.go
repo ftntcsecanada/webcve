@@ -92,15 +92,33 @@ func pathsOf(files []cveFile) []string {
 
 func findCVEFiles() []cveFile {
 	var files []cveFile
-	filepath.WalkDir(CVEDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	// Walk the resolved tree (WalkDir doesn't follow a symlinked root) but record
+	// paths under CVEDir, as the cache and deltas do
+	walkRoot := CVEDir
+	if r, err := filepath.EvalSymlinks(CVEDir); err == nil {
+		walkRoot = r
+	}
+	filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			// Skip staging dirs like .incoming during a full refresh
+			if path != walkRoot && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		name := d.Name()
-		if strings.HasPrefix(name, "CVE-") && strings.HasSuffix(name, ".json") {
-			if info, err := d.Info(); err == nil {
-				files = append(files, cveFile{path, info.ModTime()})
-			}
+		if !strings.HasPrefix(name, "CVE-") || !strings.HasSuffix(name, ".json") {
+			return nil
+		}
+		rel, err := filepath.Rel(walkRoot, path)
+		if err != nil {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			files = append(files, cveFile{filepath.Join(CVEDir, rel), info.ModTime()})
 		}
 		return nil
 	})

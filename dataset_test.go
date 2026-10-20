@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -220,5 +222,37 @@ func TestCSVCellNeutralizesFormulas(t *testing.T) {
 	}
 	if got := csvCell(-1.5); got != "-1.5" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestSwapTreeContents(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "2020", "1xxx"), 0755)
+	os.WriteFile(filepath.Join(dir, "2020", "1xxx", "CVE-2020-1000.json"), []byte("old"), 0644)
+	staging := filepath.Join(dir, ".incoming")
+	os.MkdirAll(filepath.Join(staging, "2026", "5xxx"), 0755)
+	os.WriteFile(filepath.Join(staging, "2026", "5xxx", "CVE-2026-5000.json"), []byte("new"), 0644)
+	if err := swapTreeContents(dir, staging); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != "2026" {
+		t.Fatalf("unexpected tree after swap: %v", entries)
+	}
+	if !hasCVEFilesIn(dir) {
+		t.Error("swapped tree has no CVE files")
+	}
+}
+
+func TestHasCVEFilesFollowsSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	os.MkdirAll(filepath.Join(real, "2024"), 0755)
+	os.WriteFile(filepath.Join(real, "2024", "CVE-2024-1.json"), []byte("{}"), 0644)
+	link := filepath.Join(t.TempDir(), "cves")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks unsupported")
+	}
+	if !hasCVEFilesIn(link) {
+		t.Error("symlinked tree reported empty")
 	}
 }

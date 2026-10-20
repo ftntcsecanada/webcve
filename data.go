@@ -97,14 +97,15 @@ func logf(format string, args ...any) {
 func (app *App) bootstrap() {
 	app.updateMu.Lock()
 	app.loadState()
+	noUpdates := os.Getenv("WEBCVE_NO_UPDATES") != ""
 
-	if _, err := os.Stat(KEVPath); err != nil {
+	if _, err := os.Stat(KEVPath); err != nil && !noUpdates {
 		app.status.Store("downloading")
 		if err := app.downloadKEV(); err != nil {
 			logf("KEV download failed: %v", err)
 		}
 	}
-	if !hasCVEFiles() {
+	if !noUpdates && !hasCVEFiles() {
 		app.status.Store("downloading")
 		if asOf, err := app.downloadCVEs(); err != nil {
 			logf("CVE download failed: %v", err)
@@ -116,7 +117,11 @@ func (app *App) bootstrap() {
 	if err := app.loadKEV(); err != nil {
 		logf("Warning: could not load KEV catalog: %v", err)
 	}
-	if err := app.ensureEPSS(false); err != nil {
+	if noUpdates {
+		if scores, date, err := readEPSS(EPSSPath); err == nil {
+			app.enr.EPSS, app.enr.EPSSDate, app.state.EPSSDate = scores, date, date
+		}
+	} else if err := app.ensureEPSS(false); err != nil {
 		logf("Warning: EPSS unavailable: %v", err)
 	}
 
@@ -144,8 +149,8 @@ func (app *App) bootstrap() {
 
 	logf("Ready: %d CVEs (%d KEV, %d with EPSS)", ds.stats.TotalCVEs, ds.stats.TotalKEV, ds.stats.WithEPSS)
 
-	if os.Getenv("WEBCVE_NO_UPDATES") != "" {
-		logf("WEBCVE_NO_UPDATES set: background updates disabled")
+	if noUpdates {
+		logf("WEBCVE_NO_UPDATES set: downloads and background updates disabled")
 		return
 	}
 	go app.loop("cve-delta", DeltaInterval, app.updateCVEs)
@@ -685,16 +690,23 @@ func (app *App) downloadCVEs() (time.Time, error) {
 		zipPath = inner
 	}
 
-	// Clear the tree's contents but not the dir itself, which may be a mount point
-	if entries, err := os.ReadDir(CVEDir); err == nil {
-		for _, e := range entries {
-			os.RemoveAll(filepath.Join(CVEDir, e.Name()))
-		}
-	}
+	// Extract beside the live tree first, and only swap once that succeeded, so a
+	// failed download or extract never leaves the server without data. The tree's
+	// root may be a mount point, so its contents are swapped rather than the dir.
 	if err := os.MkdirAll(CVEDir, 0755); err != nil {
 		return time.Time{}, err
 	}
-	if err := extractZip(zipPath, CVEDir); err != nil {
+	staging := filepath.Join(CVEDir, ".incoming")
+	os.RemoveAll(staging)
+	if err := extractZip(zipPath, staging); err != nil {
+		os.RemoveAll(staging)
+		return time.Time{}, err
+	}
+	if !hasCVEFilesIn(staging) {
+		os.RemoveAll(staging)
+		return time.Time{}, fmt.Errorf("snapshot %s contained no CVE records", release.TagName)
+	}
+	if err := swapTreeContents(CVEDir, staging); err != nil {
 		return time.Time{}, err
 	}
 	// The snapshot is taken at midnight UTC of its release day
@@ -783,9 +795,40 @@ func extractZip(zipPath, destDir string) error {
 	return nil
 }
 
-func hasCVEFiles() bool {
+// swapTreeContents replaces dir's entries with staging's (a subdirectory of dir)
+func swapTreeContents(dir, staging string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if p := filepath.Join(dir, e.Name()); p != staging {
+			if err := os.RemoveAll(p); err != nil {
+				return err
+			}
+		}
+	}
+	incoming, err := os.ReadDir(staging)
+	if err != nil {
+		return err
+	}
+	for _, e := range incoming {
+		if err := os.Rename(filepath.Join(staging, e.Name()), filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return os.Remove(staging)
+}
+
+func hasCVEFiles() bool { return hasCVEFilesIn(CVEDir) }
+
+func hasCVEFilesIn(root string) bool {
+	// Resolve a symlinked root; WalkDir doesn't follow it
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	found := false
-	filepath.WalkDir(CVEDir, func(path string, d fs.DirEntry, err error) error {
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), "CVE-") {
 			found = true
 			return filepath.SkipAll

@@ -63,11 +63,16 @@ watch(
 const sev = computed(() => severityKey(cve.value?.baseSeverity));
 const metrics = computed(() => parseCvssVector(cve.value?.vectorString));
 const refGroups = computed(() => groupReferences(cve.value?.references));
+// KEV notes are "; "-separated, each a URL or "label: URL" or plain text
 const kevNotes = computed(() =>
   (cve.value?.kevNotes || "")
     .split(/\s*;\s*/)
     .map((s) => s.trim())
     .filter(Boolean)
+    .map((text) => {
+      const m = text.match(/^(.*?)(https?:\/\/\S+)$/);
+      return m ? { label: m[1].trim(), url: m[2] } : { label: text, url: null };
+    })
 );
 const products = computed(() => {
   const list = (cve.value?.affectedProducts || []).filter((p) => cleanName(p.vendor) || cleanName(p.product));
@@ -230,9 +235,9 @@ const riskLabel = ["", "low", "med", "high"];
             <dd>{{ cve.kevRequiredAction }}</dd>
           </div>
           <ul v-if="kevNotes.length" class="kev-notes">
-            <li v-for="n in kevNotes" :key="n">
-              <a v-if="/^https?:/.test(n)" :href="n" target="_blank" rel="noopener noreferrer">{{ splitUrl(n).host }}<span class="muted">{{ splitUrl(n).path }}</span></a>
-              <span v-else>{{ n }}</span>
+            <li v-for="(n, i) in kevNotes" :key="i">
+              <span v-if="n.label" class="note-label">{{ n.label }}</span>
+              <a v-if="n.url" :href="n.url" target="_blank" rel="noopener noreferrer">{{ splitUrl(n.url).host }}<span class="muted">{{ splitUrl(n.url).path }}</span></a>
             </li>
           </ul>
         </section>
@@ -556,6 +561,9 @@ dd.danger {
 .kev-notes li {
   line-height: 1.7;
   color: var(--text-2);
+}
+.note-label {
+  margin-right: 4px;
 }
 .kev-notes a {
   display: block;
