@@ -69,6 +69,7 @@ type UpdateState struct {
 	CVEAsOf   time.Time `json:"cveAsOf"`   // CVE data includes all changes up to here
 	LastDelta string    `json:"lastDelta"` // Release tag of the last applied delta
 	CVE       time.Time `json:"cve"`       // When CVE data last changed locally
+	Full      time.Time `json:"full"`      // When the last full snapshot was installed
 	KEV       time.Time `json:"kev"`
 	EPSS      time.Time `json:"epss"`
 	EPSSDate  string    `json:"epssDate"`
@@ -110,7 +111,7 @@ func (app *App) bootstrap() {
 		if asOf, err := app.downloadCVEs(); err != nil {
 			logf("CVE download failed: %v", err)
 		} else {
-			app.state.CVEAsOf, app.state.CVE, app.state.LastDelta = asOf, time.Now(), ""
+			app.state.CVEAsOf, app.state.CVE, app.state.Full, app.state.LastDelta = asOf, time.Now(), time.Now(), ""
 			app.saveState()
 		}
 	}
@@ -142,6 +143,10 @@ func (app *App) bootstrap() {
 		if info, err := os.Stat(CachePath); err == nil {
 			app.state.CVE = info.ModTime()
 		}
+	}
+	if app.state.Full.IsZero() {
+		// Unknown for installs that predate the state file; the data's age is a fair stand-in
+		app.state.Full = app.state.CVEAsOf
 	}
 	app.publish(ds)
 	app.saveState()
@@ -497,13 +502,14 @@ func planDeltas(releases []GitHubRelease, asOf time.Time, lastDelta string) []Gi
 // updateCVEs applies new delta releases, or a full snapshot when too far behind or weekly
 func (app *App) updateCVEs() error {
 	app.updateMu.Lock()
-	asOf, lastDelta, lastFull := app.state.CVEAsOf, app.state.LastDelta, app.state.CVE
+	asOf, lastDelta, lastFull := app.state.CVEAsOf, app.state.LastDelta, app.state.Full
 	app.updateMu.Unlock()
 
 	if app.fullRunning.Load() {
 		return nil
 	}
-	if asOf.IsZero() || time.Since(asOf) > MaxDeltaCatchUp {
+	// Too far behind to replay deltas, or due for the weekly safety-net snapshot
+	if asOf.IsZero() || time.Since(asOf) > MaxDeltaCatchUp || time.Since(lastFull) > FullInterval {
 		return app.fullRefresh()
 	}
 
@@ -556,13 +562,6 @@ func (app *App) updateCVEs() error {
 
 	if err := saveCache(ds.CVEs); err != nil {
 		logf("Warning: could not save cache: %v", err)
-	}
-	if time.Since(lastFull) > FullInterval {
-		go func() {
-			if err := app.fullRefresh(); err != nil {
-				logf("Full refresh failed: %v", err)
-			}
-		}()
 	}
 	return nil
 }
@@ -646,7 +645,7 @@ func (app *App) fullRefresh() error {
 	}
 	app.updateMu.Lock()
 	defer app.updateMu.Unlock()
-	app.state.CVEAsOf, app.state.LastDelta, app.state.CVE = asOf, "", time.Now()
+	app.state.CVEAsOf, app.state.LastDelta, app.state.CVE, app.state.Full = asOf, "", time.Now(), time.Now()
 	app.publish(buildDataset(cves, &app.enr))
 	app.saveState()
 	return nil
