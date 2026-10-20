@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestParseCPE(t *testing.T) {
@@ -97,5 +98,38 @@ func TestExploitSourcesAndDedup(t *testing.T) {
 	_, resp := ds.filterCVEs(compileFilter(ds, FilterRequest{ExploitSources: []string{"metasploit"}}), true)
 	if resp.Facets.ExploitSources["euvd"] != 1 || resp.Facets.ExploitSources["metasploit"] != 1 {
 		t.Errorf("exploit source facets = %v", resp.Facets.ExploitSources)
+	}
+}
+
+func TestVendorRows(t *testing.T) {
+	ds := testDataset()
+	f := compileFilter(ds, FilterRequest{})
+	rows := map[string]*VendorRow{}
+	now := time.Now()
+	for i := range ds.CVEs {
+		if ds.failedGroups(i, f) != 0 {
+			continue
+		}
+		for _, k := range ds.vendorKeys[i] {
+			if rows[k] == nil {
+				rows[k] = &VendorRow{Key: k, Years: make([]int, vendorYears), weakCount: map[string]int{}}
+			}
+			rows[k].add(&ds.CVEs[i], now.Year()-vendorYears+1, now.AddDate(-1, 0, 0), now.AddDate(-2, 0, 0), now.Format("2006-01-02"))
+		}
+	}
+	ms := rows["microsoft"]
+	ms.finish()
+	if ms.CVEs != 2 || ms.Exploit != 1 || ms.Critical != 0 || ms.High != 1 || ms.CritHighPct != 0.5 {
+		t.Fatalf("microsoft row = %+v", ms)
+	}
+	ft := rows["fortinet"]
+	ft.finish()
+	if ft.KEV != 1 || ft.Ransomware != 1 || ft.DaysToKEV != 2 || ft.KEVPct != 1 {
+		t.Fatalf("fortinet row = %+v", ft)
+	}
+	list := []*VendorRow{ms, ft}
+	sortVendorRows(list, "kevPct", true)
+	if list[0].Key != "fortinet" {
+		t.Error("sort by KEV rate failed")
 	}
 }

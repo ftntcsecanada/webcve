@@ -76,12 +76,15 @@ watch(
 const sev = computed(() => severityKey(cve.value?.baseSeverity));
 const metrics = computed(() => parseCvssVector(cve.value?.vectorString));
 const evidence = computed(() => cve.value?.exploitEvidence || []);
+// Exploit-code kinds title each link individually; reports share one explanation
+const PER_LINK_KINDS = new Set(["metasploit", "exploitdb", "nuclei", "github"]);
+
 // One row per kind of evidence, with its links underneath
 const evidenceGroups = computed(() => {
   const groups = new Map();
   for (const e of evidence.value) {
-    if (!groups.has(e.kind)) groups.set(e.kind, { kind: e.kind, detail: e.detail, urls: [] });
-    if (e.url) groups.get(e.kind).urls.push(e.url);
+    if (!groups.has(e.kind)) groups.set(e.kind, { kind: e.kind, detail: e.detail, items: [] });
+    if (e.url) groups.get(e.kind).items.push({ url: e.url, title: e.detail });
   }
   return [...groups.values()];
 });
@@ -284,26 +287,35 @@ const riskLabel = ["", "low", "med", "high"];
             <li v-for="g in evidenceGroups" :key="g.kind" :class="g.kind">
               <span class="ev-kind">
                 <Term :k="EVIDENCE_TERM[g.kind] || g.kind">{{ EVIDENCE_LABEL[g.kind] || g.kind }}</Term>
-                <span v-if="g.urls.length > 1" class="count num">{{ g.urls.length }}</span>
+                <span v-if="g.items.length > 1" class="count num">{{ g.items.length }}</span>
               </span>
               <div class="ev-body">
                 <span v-if="g.kind === 'github' || g.kind === 'github-poc'" class="ev-detail caution">
                   Community-indexed and unvetted: some PoC repositories are fake or contain malware. Review code before running it.
                 </span>
-                <span v-else class="ev-detail">{{ g.detail }}<template v-if="g.kind.startsWith('ssvc')">. CISA doesn't publish where the exploit is.</template></span>
+                <span v-else-if="!PER_LINK_KINDS.has(g.kind)" class="ev-detail">
+                  {{ g.detail }}<template v-if="g.kind.startsWith('ssvc')">. CISA doesn't publish where the exploit is.</template>
+                </span>
                 <a
-                  v-for="u in showAllEvidence ? g.urls : g.urls.slice(0, 4)"
-                  :key="u"
+                  v-for="it in showAllEvidence ? g.items : g.items.slice(0, 4)"
+                  :key="it.url"
                   class="ev-link"
-                  :href="u"
+                  :class="{ titled: PER_LINK_KINDS.has(g.kind) }"
+                  :href="it.url"
                   target="_blank"
                   rel="noopener noreferrer"
-                  :title="u"
+                  :title="it.url"
                 >
-                  <span class="r-host">{{ splitUrl(u).host }}</span><span class="r-path">{{ splitUrl(u).path }}</span>
+                  <template v-if="PER_LINK_KINDS.has(g.kind)">
+                    <span class="ev-title">{{ it.title }}</span>
+                    <span class="r-path">{{ splitUrl(it.url).host }}</span>
+                  </template>
+                  <template v-else>
+                    <span class="r-host">{{ splitUrl(it.url).host }}</span><span class="r-path">{{ splitUrl(it.url).path }}</span>
+                  </template>
                 </a>
-                <button v-if="g.urls.length > 4 && !showAllEvidence" class="link-btn" @click="showAllEvidence = true">
-                  Show {{ g.urls.length - 4 }} more
+                <button v-if="g.items.length > 4 && !showAllEvidence" class="link-btn" @click="showAllEvidence = true">
+                  Show {{ g.items.length - 4 }} more
                 </button>
               </div>
             </li>
@@ -1043,6 +1055,19 @@ h4 .count {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.ev-link.titled {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.ev-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ev-link.titled .r-path {
+  flex-shrink: 0;
+  font-size: 11.5px;
 }
 @media (max-width: 520px) {
   .evidence li {

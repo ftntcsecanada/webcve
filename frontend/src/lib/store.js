@@ -26,8 +26,9 @@ export function emptyFilters() {
 }
 
 export const VIEWS = {
-  all: { label: "All CVEs", defaultSort: { by: "datePublished", desc: true } },
-  kev: { label: "Known Exploited", defaultSort: { by: "kevDateAdded", desc: true } },
+  all: { label: "All CVEs", short: "All", defaultSort: { by: "datePublished", desc: true } },
+  kev: { label: "Known Exploited", short: "KEV", defaultSort: { by: "kevDateAdded", desc: true } },
+  vendors: { label: "Vendors", short: "Vendors", defaultSort: { by: "datePublished", desc: true } },
 };
 
 export const SORTS = {
@@ -57,7 +58,20 @@ export const state = reactive({
   page: 1,
   pageSize: 50,
   selectedId: null,
+  // Vendor comparison view
+  vendor: { sort: "kev", desc: true, min: 25, query: "" },
 });
+
+export function vendorRequest() {
+  return {
+    ...buildRequest(state.view, state.filters),
+    sort: state.vendor.sort,
+    desc: state.vendor.desc,
+    minCves: state.vendor.min,
+    query: state.vendor.query,
+    limit: 200,
+  };
+}
 
 export const results = reactive({
   loading: false,
@@ -281,6 +295,15 @@ function toQuery(view, f, sort, extra = {}) {
     }
   }
   for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
+  if (view === "vendors") {
+    const vv = state.vendor;
+    if (vv.sort !== "kev" || !vv.desc) {
+      p.set("vs", vv.sort);
+      p.set("vd", vv.desc ? "desc" : "asc");
+    }
+    if (vv.min !== 25) p.set("vmin", vv.min);
+    if (vv.query) p.set("vq", vv.query);
+  }
   return p.toString();
 }
 
@@ -288,7 +311,13 @@ export function fromQuery(qs) {
   const p = new URLSearchParams(qs);
   const f = emptyFilters();
   const num = (k) => (p.has(k) && !isNaN(parseFloat(p.get(k))) ? parseFloat(p.get(k)) : null);
-  const view = p.get("view") === "kev" ? "kev" : "all";
+  const view = ["kev", "vendors"].includes(p.get("view")) ? p.get("view") : "all";
+  if (view === "vendors") {
+    state.vendor.sort = p.get("vs") || "kev";
+    state.vendor.desc = p.get("vd") !== "asc";
+    state.vendor.min = parseInt(p.get("vmin")) || 25;
+    state.vendor.query = p.get("vq") || "";
+  }
   f.q = p.get("q") || "";
   f.severities = p.getAll("sev");
   f.attackVectors = p.getAll("av");
@@ -417,7 +446,7 @@ export function startSync() {
   watch(() => [state.filters, state.view], () => schedule(true), { deep: true });
   watch(() => [state.sort.by, state.sort.desc, state.pageSize], () => schedule(true));
   watch(() => state.page, () => schedule(false));
-  watch(() => [state, state.filters], writeURL, { deep: true });
+  watch(() => [state, state.filters, state.vendor], writeURL, { deep: true });
 
   // Saved search badges follow data refreshes
   watch(

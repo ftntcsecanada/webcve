@@ -265,8 +265,12 @@ func (ds *Dataset) buildKeys() {
 		if len(aps) == 0 && (cve.Vendor != "" || cve.Product != "") {
 			aps = []AffectedProduct{{Vendor: cve.Vendor, Product: cve.Product}}
 		}
-		// NVD's CPE products make CVEs whose record says "n/a" findable by vendor
-		aps = append(slices.Clip(aps), cve.NVDProducts...)
+		// NVD's CPE products make CVEs whose record says "n/a" findable by vendor.
+		// Only as a fallback: CPE data also lists platforms (e.g. Linux distros a
+		// third-party library ships on), which would misattribute CVEs to them.
+		if !hasRealVendor(aps) {
+			aps = append(slices.Clip(aps), cve.NVDProducts...)
+		}
 		var vk, pk []string
 		for _, ap := range aps {
 			if !isPlaceholderName(ap.Vendor) {
@@ -283,6 +287,15 @@ func (ds *Dataset) buildKeys() {
 		ds.vendorKeys[i] = vk
 		ds.productKeys[i] = pk
 	}
+}
+
+func hasRealVendor(aps []AffectedProduct) bool {
+	for _, ap := range aps {
+		if !isPlaceholderName(ap.Vendor) {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(list []string, v string) bool {
@@ -329,9 +342,12 @@ func (ds *Dataset) buildOptions() {
 				add(ap, 1)
 			}
 			// CPE spellings ("palo alto networks") count toward totals but only
-			// name the option when no CVE record spells it
-			for _, ap := range cve.NVDProducts {
-				add(ap, 0)
+			// name the option when no CVE record spells it; like the filter keys,
+			// they're only used when the record names no vendor
+			if !hasRealVendor(cve.AffectedProducts) {
+				for _, ap := range cve.NVDProducts {
+					add(ap, 0)
+				}
 			}
 		}
 		out := make([]Option, 0, len(groups))

@@ -49,6 +49,17 @@ export const GLOSSARY = {
   Assigner: "The CNA that assigned and published this CVE.",
   Reserved: "When the CVE ID was reserved, usually before the vulnerability was disclosed.",
   "Fixed versions": "Package versions that contain the fix, from OSV. Upgrade to one of these or later.",
+  "Vendor CVEs": "CVEs that list this vendor as affected, within the current filters. Volume reflects product footprint and how actively a vendor discloses, not only security quality.",
+  "Last 12 months": "CVEs published in the past 12 months, and the change against the 12 months before.",
+  "Avg CVSS": "Mean CVSS base score of this vendor's scored CVEs.",
+  "Critical/High %": "Share of scored CVEs rated High or Critical.",
+  "KEV count": "How many of this vendor's CVEs are in CISA's Known Exploited Vulnerabilities catalog.",
+  "KEV rate": "Share of this vendor's CVEs that are known to be exploited. Normalizes for volume: a high rate means attackers focus on this vendor's flaws.",
+  "Exploit rate": "Share of this vendor's CVEs with any exploit evidence (public PoC, exploit code, scanner template, or reported exploitation).",
+  "EPSS ≥ 10%": "CVEs with at least a 10% predicted chance of exploitation in the next 30 days.",
+  "Overdue KEV": "KEV entries past CISA's remediation due date. All due dates eventually pass; this mostly reflects how long a vendor has had exploited flaws.",
+  "Days to KEV": "Median days between a CVE's publication and CISA adding it to KEV. Lower means this vendor's flaws get exploited faster after disclosure (0 = already exploited when published).",
+  "Top weaknesses": "The vendor's most frequent CWE weakness types.",
 };
 
 // CVSS metric labels used by parseCvssVector map onto glossary entries

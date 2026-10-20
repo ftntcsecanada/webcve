@@ -6,6 +6,7 @@ import ResultsTable from "./components/ResultsTable.vue";
 import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
+import VendorsView from "./components/VendorsView.vue";
 import {
   state,
   results,
@@ -28,6 +29,7 @@ import { explain } from "./lib/glossary.js";
 
 const f = state.filters;
 const isKev = computed(() => state.view === "kev");
+const isVendors = computed(() => state.view === "vendors");
 
 // ---- Theme ----
 function storageGet(k) {
@@ -172,6 +174,9 @@ function onKey(e) {
       break;
     case "2":
       setView("kev");
+      break;
+    case "3":
+      setView("vendors");
       break;
     case "f":
       filtersOpen.value = !filtersOpen.value;
@@ -408,10 +413,11 @@ function closePopovers(e) {
               :class="{ on: state.view === key, kev: key === 'kev' }"
               @click="setView(key)"
             >
-              <Icon :name="key === 'kev' ? 'flame' : 'list'" :size="14" />
-              <span v-if="key === 'kev'" v-tip="explain('KEV')">{{ v.label }}</span>
-              <template v-else>{{ v.label }}</template>
-              <span v-if="stats" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
+              <Icon :name="key === 'kev' ? 'flame' : key === 'vendors' ? 'package' : 'list'" :size="14" />
+              <span v-if="key === 'kev'" v-tip="explain('KEV')" class="tab-long">{{ v.label }}</span>
+              <span v-else class="tab-long">{{ v.label }}</span>
+              <span class="tab-short">{{ v.short }}</span>
+              <span v-if="stats && key !== 'vendors'" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
             </button>
           </nav>
           <button class="btn filters-btn" @click="filtersOpen = true">
@@ -449,7 +455,7 @@ function closePopovers(e) {
         </section>
 
         <!-- Year chart -->
-        <section v-else-if="!isKev" class="chart-card" :class="{ collapsed: !showChart }">
+        <section v-else-if="!isKev && !isVendors" class="chart-card" :class="{ collapsed: !showChart }">
           <div class="chart-head">
             <span class="chart-title">CVEs by publication year</span>
             <div v-if="showChart" class="legend">
@@ -470,7 +476,7 @@ function closePopovers(e) {
         </section>
 
         <!-- Results header -->
-        <div class="results-head">
+        <div v-if="!isVendors" class="results-head">
           <div class="count-line">
             <span class="total num">{{ fmtNum(results.total) }}</span>
             <span class="muted">{{ isKev ? "known exploited" : "vulnerabilities" }}</span>
@@ -526,7 +532,9 @@ function closePopovers(e) {
           <button class="btn ghost sm" @click="resetFilters">Clear all</button>
         </div>
 
-        <div v-if="activeSaved && saved.active.newCount && !f.since" class="new-banner">
+        <VendorsView v-if="isVendors" />
+
+        <div v-if="activeSaved && saved.active.newCount && !f.since && !isVendors" class="new-banner">
           <b class="num">{{ fmtNum(saved.active.newCount) }}</b> new in “{{ activeSaved.name }}” since {{ fmtDate(saved.active.previousSeen) }}
           <button class="btn sm" @click="f.since = saved.active.previousSeen">Show only new</button>
         </div>
@@ -537,7 +545,7 @@ function closePopovers(e) {
         </div>
 
         <!-- Table -->
-        <div class="table-card">
+        <div v-if="!isVendors" class="table-card">
           <div v-if="results.warming && !results.loaded" class="warming">
             <span class="spinner big" />
             <h3>{{ statusText[results.warming] || "Loading…" }}</h3>
@@ -602,7 +610,7 @@ function closePopovers(e) {
           <div><dt><span class="kbd">↵</span></dt><dd>Open details</dd></div>
           <div><dt><span class="kbd">Esc</span></dt><dd>Close panel</dd></div>
           <div><dt><span class="kbd">[</span> <span class="kbd">]</span></dt><dd>Previous / next page</dd></div>
-          <div><dt><span class="kbd">1</span> <span class="kbd">2</span></dt><dd>All CVEs / KEV view</dd></div>
+          <div><dt><span class="kbd">1</span> <span class="kbd">2</span> <span class="kbd">3</span></dt><dd>All CVEs / KEV / Vendors</dd></div>
           <div><dt><span class="kbd">f</span></dt><dd>Toggle filters (narrow screens)</dd></div>
         </dl>
         <button class="btn sm sources-link" @click="(showSources = true), (showHelp = false)">
@@ -821,6 +829,9 @@ function closePopovers(e) {
 }
 .tabs button.on.kev {
   color: var(--kev-text);
+}
+.tab-short {
+  display: none;
 }
 .tab-count {
   font-size: 11.5px;
@@ -1391,7 +1402,14 @@ function closePopovers(e) {
     display: none;
   }
   .tabs button {
-    padding: 0 8px;
+    padding: 0 10px;
+  }
+  .tabs button .icon,
+  .tab-long {
+    display: none;
+  }
+  .tab-short {
+    display: inline;
   }
   .tab-count {
     display: none;
