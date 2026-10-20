@@ -17,6 +17,7 @@ import {
   epssLevel,
   summaryText,
   SSVC_LABEL,
+  EVIDENCE_LABEL,
 } from "../lib/format.js";
 
 const props = defineProps({
@@ -32,6 +33,7 @@ const error = ref(null);
 const copied = ref("");
 const scroller = ref(null);
 const showAllProducts = ref(false);
+const showAllEvidence = ref(false);
 const related = ref(null);
 
 watch(
@@ -41,6 +43,7 @@ watch(
     loading.value = true;
     error.value = null;
     showAllProducts.value = false;
+    showAllEvidence.value = false;
     related.value = null;
     fetchRelated(id).then((r) => {
       if (props.id === id) related.value = r;
@@ -62,7 +65,19 @@ watch(
 
 const sev = computed(() => severityKey(cve.value?.baseSeverity));
 const metrics = computed(() => parseCvssVector(cve.value?.vectorString));
-const refGroups = computed(() => groupReferences(cve.value?.references));
+const evidence = computed(() => cve.value?.exploitEvidence || []);
+// One row per kind of evidence, with its links underneath
+const evidenceGroups = computed(() => {
+  const groups = new Map();
+  for (const e of evidence.value) {
+    if (!groups.has(e.kind)) groups.set(e.kind, { kind: e.kind, detail: e.detail, urls: [] });
+    if (e.url) groups.get(e.kind).urls.push(e.url);
+  }
+  return [...groups.values()];
+});
+const refGroups = computed(() =>
+  groupReferences(cve.value?.references, new Set(evidence.value.filter((e) => e.url).map((e) => e.url)))
+);
 // KEV notes are "; "-separated, each a URL or "label: URL" or plain text
 const kevNotes = computed(() =>
   (cve.value?.kevNotes || "")
@@ -207,6 +222,36 @@ const riskLabel = ["", "low", "med", "high"];
               <span class="sig-sev">{{ SEVERITY_LABEL[severityKey(cve.cvssV4Severity)] }}</span>
             </div>
           </div>
+        </section>
+
+        <!-- Why this CVE is flagged as having exploit evidence -->
+        <section v-if="evidence.length" class="block evidence">
+          <h4>Why this is flagged as exploited or exploitable</h4>
+          <ul>
+            <li v-for="g in evidenceGroups" :key="g.kind" :class="g.kind">
+              <span class="ev-kind">
+                {{ EVIDENCE_LABEL[g.kind] || g.kind }}
+                <span v-if="g.urls.length > 1" class="count num">{{ g.urls.length }}</span>
+              </span>
+              <div class="ev-body">
+                <span class="ev-detail">{{ g.detail }}<template v-if="g.kind.startsWith('ssvc')">. CISA doesn't publish where the exploit is.</template></span>
+                <a
+                  v-for="u in showAllEvidence ? g.urls : g.urls.slice(0, 4)"
+                  :key="u"
+                  class="ev-link"
+                  :href="u"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="u"
+                >
+                  <span class="r-host">{{ splitUrl(u).host }}</span><span class="r-path">{{ splitUrl(u).path }}</span>
+                </a>
+                <button v-if="g.urls.length > 4 && !showAllEvidence" class="link-btn" @click="showAllEvidence = true">
+                  Show {{ g.urls.length - 4 }} more
+                </button>
+              </div>
+            </li>
+          </ul>
         </section>
 
         <!-- KEV callout -->
@@ -766,6 +811,69 @@ h4 .count {
 }
 .kev-only-note .icon {
   margin-top: 2px;
+}
+.evidence ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.evidence li {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 2px 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.evidence li:first-child {
+  border-top: 0;
+}
+.ev-kind {
+  font-weight: 600;
+  color: var(--warn);
+}
+.ev-kind .count {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.ev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ev-body .link-btn {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.evidence li.ssvc-active .ev-kind {
+  color: var(--danger);
+}
+.evidence li.github-poc .ev-kind {
+  color: var(--text-2);
+}
+.ev-detail {
+  color: var(--text-2);
+}
+.ev-link {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 520px) {
+  .evidence li {
+    grid-template-columns: 1fr;
+  }
+  .ev-kind {
+    margin-bottom: 2px;
+  }
 }
 .signals {
   display: grid;

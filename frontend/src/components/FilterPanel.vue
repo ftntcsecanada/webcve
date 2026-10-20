@@ -160,7 +160,7 @@ function onNumber(key, e) {
         <span class="count num">{{ fmtNum(results.facets.exploit) }}</span>
         <input v-model="f.exploit" type="checkbox" class="switch" />
       </label>
-      <p class="hint">Public proof of concept, exploit code, or active exploitation (CISA SSVC and exploit references).</p>
+      <p class="hint">CISA reports a public PoC or active exploitation, or a reference links to exploit code (tagged links, exploit archives, GitHub PoCs). Open a CVE to see which.</p>
     </section>
 
     <section class="group">

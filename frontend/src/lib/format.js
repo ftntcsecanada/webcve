@@ -160,12 +160,14 @@ export function normalizeTag(tag) {
   return tag.toLowerCase().replace(/^x_refsource_/, "").replace(/_/g, "-");
 }
 
-export function groupReferences(refs) {
+// exploitUrls: links the server identified as exploit evidence; they're grouped
+// under "Exploit" even when the publisher tagged them as something else
+export function groupReferences(refs, exploitUrls = new Set()) {
   const groups = new Map(TAG_GROUPS.map(([k, label]) => [k, { key: k, label, refs: [] }]));
   const other = { key: "other", label: "Other", refs: [] };
   for (const r of refs || []) {
     const tags = (r.tags || []).map(normalizeTag);
-    const hit = TAG_GROUPS.find(([k]) => tags.includes(k));
+    const hit = exploitUrls.has(r.url) ? TAG_GROUPS[0] : TAG_GROUPS.find(([k]) => tags.includes(k));
     (hit ? groups.get(hit[0]) : other).refs.push({ ...r, tags });
   }
   return [...groups.values(), other].filter((g) => g.refs.length);
@@ -205,6 +207,14 @@ export function fmtPercentile(p) {
   if (p >= 0.99) return "Top 1% of CVEs";
   return `Higher than ${Math.floor(p * 100)}% of CVEs`;
 }
+
+export const EVIDENCE_LABEL = {
+  "ssvc-active": "CISA: actively exploited",
+  "ssvc-poc": "CISA: proof of concept public",
+  tagged: "Exploit reference",
+  "exploit-site": "Exploit archive",
+  "github-poc": "Possible GitHub PoC",
+};
 
 export const SSVC_LABEL = {
   exploitation: { none: "No known exploitation", poc: "Proof of concept public", active: "Actively exploited" },

@@ -216,6 +216,31 @@ func TestPlanDeltas(t *testing.T) {
 	}
 }
 
+func TestExploitEvidence(t *testing.T) {
+	cve := &CVE{ID: "CVE-2024-3400", SSVCExploitation: "poc", References: []Reference{
+		{URL: "https://vendor.example/advisory"},
+		{URL: "https://example.com/writeup", Tags: []string{"exploit"}},
+		{URL: "https://www.exploit-db.com/exploits/51996"},
+		{URL: "https://github.com/someone/CVE-2024-3400"},
+		{URL: "https://github.com/h4x/fortios-poc/blob/main/x.py"},
+		{URL: "https://github.com/advisories/GHSA-xxxx"},
+		{URL: "https://github.com/acme/app/security/advisories/GHSA-yyyy"},
+		{URL: "https://github.com/acme/app/commit/abc"},
+		{URL: "http://packetstormsecurity.com/files/165371/VMware-Security-Advisory-2021-0028.html"},
+	}}
+	var kinds []string
+	for _, e := range exploitEvidence(cve) {
+		kinds = append(kinds, e.Kind)
+	}
+	want := []string{"ssvc-poc", "tagged", "exploit-site", "github-poc", "github-poc"}
+	if !slices.Equal(kinds, want) {
+		t.Fatalf("evidence kinds = %v, want %v", kinds, want)
+	}
+	if hasPublicExploit(&CVE{References: []Reference{{URL: "https://github.com/acme/epoch-lib/commit/abc"}}}) {
+		t.Error("ordinary GitHub commit counted as exploit evidence")
+	}
+}
+
 func TestCSVCellNeutralizesFormulas(t *testing.T) {
 	if got := csvCell("=HYPERLINK(1)"); got != "'=HYPERLINK(1)" {
 		t.Errorf("got %q", got)

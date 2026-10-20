@@ -84,7 +84,11 @@ func (app *App) handleGetCVE(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "CVE not found"})
 	}
-	return c.JSON(http.StatusOK, &ds.CVEs[i])
+	cve := &ds.CVEs[i]
+	return c.JSON(http.StatusOK, struct {
+		*CVE
+		ExploitEvidence []Evidence `json:"exploitEvidence"`
+	}{cve, exploitEvidence(cve)})
 }
 
 // handleRelated returns other CVEs for the same products, and with the same

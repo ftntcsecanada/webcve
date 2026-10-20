@@ -236,23 +236,76 @@ var exploitHosts = []string{
 	"0day.today/",
 }
 
-// hasPublicExploit reports exploit evidence from SSVC or the references
-func hasPublicExploit(cve *CVE) bool {
-	if cve.SSVCExploitation == "poc" || cve.SSVCExploitation == "active" {
-		return true
+// Evidence is one reason a CVE is flagged as having exploit evidence
+type Evidence struct {
+	Kind   string `json:"kind"` // ssvc-active, ssvc-poc, tagged, exploit-site, github-poc
+	Detail string `json:"detail"`
+	URL    string `json:"url,omitempty"`
+}
+
+// exploitEvidence lists why a CVE counts as having a public or active exploit,
+// strongest first. Each reference contributes at most one entry.
+func exploitEvidence(cve *CVE) []Evidence {
+	var out []Evidence
+	switch cve.SSVCExploitation {
+	case "active":
+		out = append(out, Evidence{Kind: "ssvc-active", Detail: "CISA reports active exploitation in its SSVC assessment"})
+	case "poc":
+		out = append(out, Evidence{Kind: "ssvc-poc", Detail: "CISA reports a public proof of concept in its SSVC assessment"})
 	}
 	for _, r := range cve.References {
-		for _, t := range r.Tags {
-			if strings.EqualFold(t, "exploit") {
-				return true
-			}
-		}
-		u := strings.ToLower(r.URL)
-		for _, h := range exploitHosts {
-			if strings.Contains(u, h) {
-				return true
-			}
+		if e, ok := referenceEvidence(cve, r); ok {
+			out = append(out, e)
 		}
 	}
-	return false
+	return out
+}
+
+func referenceEvidence(cve *CVE, r Reference) (Evidence, bool) {
+	for _, t := range r.Tags {
+		if strings.EqualFold(t, "exploit") {
+			return Evidence{Kind: "tagged", Detail: "Reference tagged as an exploit by the CVE's publisher", URL: r.URL}, true
+		}
+	}
+	u := strings.ToLower(r.URL)
+	// Packet Storm also republishes vendor advisories, which aren't exploits
+	if strings.Contains(u, "packetstorm") && (strings.Contains(u, "advisory") || strings.Contains(u, "bulletin")) {
+		return Evidence{}, false
+	}
+	for _, h := range exploitHosts {
+		if strings.Contains(u, h) {
+			return Evidence{Kind: "exploit-site", Detail: "Link to a known exploit archive", URL: r.URL}, true
+		}
+	}
+	if isGitHubPoC(u, strings.ToLower(cve.ID)) {
+		return Evidence{Kind: "github-poc", Detail: "GitHub link that looks like a proof of concept (matched by URL, not confirmed)", URL: r.URL}, true
+	}
+	return Evidence{}, false
+}
+
+// isGitHubPoC matches GitHub repos or files whose path names a PoC/exploit or
+// the CVE itself, excluding advisories and the vendor's own security pages
+func isGitHubPoC(u, cveID string) bool {
+	rest, ok := strings.CutPrefix(u, "https://github.com/")
+	if !ok {
+		rest, ok = strings.CutPrefix(u, "https://gist.github.com/")
+	}
+	if !ok || strings.HasPrefix(rest, "advisories") || strings.Contains(rest, "/security/") {
+		return false
+	}
+	if cveID != "" && strings.Contains(rest, cveID) {
+		return true
+	}
+	// Whole words only, so "epoch" or "apocalypse" don't count as "poc"
+	found := false
+	tokenize(rest, func(w string) {
+		if w == "poc" || w == "pocs" || strings.HasPrefix(w, "exploit") {
+			found = true
+		}
+	})
+	return found
+}
+
+func hasPublicExploit(cve *CVE) bool {
+	return len(exploitEvidence(cve)) > 0
 }
