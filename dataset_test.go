@@ -136,6 +136,23 @@ func TestEnrichment(t *testing.T) {
 	}
 }
 
+func TestKEVPlaceholders(t *testing.T) {
+	enr := &Enrichment{KEV: map[string]*KEVEntry{
+		"CVE-2026-9999": {CveID: "CVE-2026-9999", VendorProject: "Acme", Product: "Widget", VulnerabilityName: "Acme Widget RCE", DateAdded: "2026-10-01"},
+	}}
+	ds := buildDataset([]CVE{{ID: "CVE-2026-0001"}}, enr)
+	i, ok := ds.byID["CVE-2026-9999"]
+	if !ok || !ds.CVEs[i].KEVOnly || !ds.CVEs[i].InKEV || ds.CVEs[i].Year != 2026 {
+		t.Fatalf("placeholder missing or wrong: %+v", ds.CVEs)
+	}
+	// A rebuild once the real record has arrived drops the placeholder
+	cves := append(slices.Clone(ds.CVEs), CVE{ID: "CVE-2026-9999", Title: "real"})
+	ds2 := buildDataset(cves, enr)
+	if len(ds2.CVEs) != 2 || ds2.CVEs[ds2.byID["CVE-2026-9999"]].Title != "real" {
+		t.Fatalf("placeholder not replaced: %+v", ds2.CVEs)
+	}
+}
+
 func TestSortByEPSS(t *testing.T) {
 	ds := testDataset()
 	matches, _ := ds.filterCVEs(compileFilter(ds, FilterRequest{SortBy: "epss", SortDesc: true}), false)

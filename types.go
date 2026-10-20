@@ -77,6 +77,10 @@ type CVE struct {
 	// PublicExploit is set when SSVC says poc/active or a reference points at exploit code
 	PublicExploit bool `json:"publicExploit"`
 
+	// KEVOnly marks a placeholder built from the KEV catalog because the CVE
+	// record isn't in the local corpus yet; a real record replaces it
+	KEVOnly bool `json:"kevOnly,omitempty"`
+
 	// File path for cache validation
 	FilePath string `json:"-"`
 }

@@ -52,6 +52,7 @@ type Enrichment struct {
 // buildDataset enriches cves (which it takes ownership of) and builds all indexes
 func buildDataset(cves []CVE, enr *Enrichment) *Dataset {
 	start := time.Now()
+	cves = withKEVPlaceholders(cves, enr.KEV)
 	ds := &Dataset{CVEs: cves, byID: make(map[string]int, len(cves)), kevCatalogDate: enr.KEVCatalogDate}
 
 	for i := range ds.CVEs {
@@ -66,6 +67,48 @@ func buildDataset(cves []CVE, enr *Enrichment) *Dataset {
 	ds.buildStats(enr)
 	logf("Built dataset: %d CVEs, %d search terms in %s", len(ds.CVEs), len(ds.search.terms), time.Since(start).Round(time.Millisecond))
 	return ds
+}
+
+// withKEVPlaceholders drops placeholders from a previous build and adds one for
+// every KEV entry whose CVE record isn't loaded, so the KEV view is never missing
+// entries while a new record waits for the next delta
+func withKEVPlaceholders(cves []CVE, kev map[string]*KEVEntry) []CVE {
+	present := make(map[string]bool, len(cves))
+	kept := cves[:0]
+	for _, c := range cves {
+		if !c.KEVOnly {
+			kept = append(kept, c)
+			present[c.ID] = true
+		}
+	}
+	added := 0
+	for id, k := range kev {
+		if present[id] {
+			continue
+		}
+		c := CVE{
+			ID:               id,
+			State:            "PUBLISHED",
+			Vendor:           k.VendorProject,
+			Product:          k.Product,
+			AffectedProducts: []AffectedProduct{{Vendor: k.VendorProject, Product: k.Product}},
+			Title:            k.VulnerabilityName,
+			Description:      k.ShortDescription,
+			KEVOnly:          true,
+		}
+		if t, err := time.Parse("2006-01-02", k.DateAdded); err == nil {
+			c.DatePublished, c.Year = t, t.Year()
+		}
+		if len(k.CWEs) > 0 {
+			c.CWE = k.CWEs[0]
+		}
+		kept = append(kept, c)
+		added++
+	}
+	if added > 0 {
+		logf("Added %d KEV entries not yet in the CVE list as placeholders", added)
+	}
+	return kept
 }
 
 func applyEnrichment(cve *CVE, enr *Enrichment) {

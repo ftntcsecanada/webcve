@@ -174,6 +174,11 @@ const riskLabel = ["", "low", "med", "high"];
           </div>
         </section>
 
+        <p v-if="cve.kevOnly" class="kev-only-note">
+          <Icon name="alert" :size="14" /> CISA lists this CVE as exploited, but its record hasn't reached the CVE list this server mirrors yet.
+          Details below come from the KEV catalog and fill in automatically when the record arrives.
+        </p>
+
         <!-- Risk signals -->
         <section class="signals">
           <div class="signal" :title="cve.epss ? 'Probability of exploitation activity in the next 30 days (FIRST EPSS)' : 'No EPSS score published'">
@@ -739,6 +744,21 @@ h4 .count {
   color: var(--text-3);
 }
 
+.kev-only-note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.kev-only-note .icon {
+  margin-top: 2px;
+}
 .signals {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
