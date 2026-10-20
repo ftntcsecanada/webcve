@@ -1,0 +1,8 @@
+cves
+kev
+cve_cache.gob
+webcve
+frontend/node_modules
+site
+.git
+claude_ssh_key*

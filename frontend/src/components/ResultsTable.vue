@@ -2,7 +2,7 @@
 import { computed, watch, nextTick } from "vue";
 import Icon from "./Icon.vue";
 import { state, results, addUnique } from "../lib/store.js";
-import { SEVERITY_LABEL, severityKey, fmtDate, fmtRelative, daysFromToday, cleanName, summaryText } from "../lib/format.js";
+import { SEVERITY_LABEL, severityKey, fmtDate, fmtRelative, daysFromToday, cleanName, summaryText, fmtEpss, epssLevel } from "../lib/format.js";
 
 const props = defineProps({ cursor: { type: Number, default: -1 } });
 const emit = defineEmits(["open", "update:cursor"]);
@@ -18,6 +18,11 @@ function dueStatus(cve) {
   if (d === 0) return { cls: "danger", text: "Due today" };
   if (d <= 14) return { cls: "warn", text: `Due in ${d}d` };
   return { cls: "", text: `Due in ${d}d` };
+}
+
+function epssTitle(cve) {
+  if (!cve.epss) return "No EPSS score";
+  return `EPSS: ${fmtEpss(cve.epss)} chance of exploitation in the next 30 days · ${Math.round(cve.epssPercentile * 100)}th percentile`;
 }
 
 function sortBy(key) {
@@ -55,6 +60,12 @@ watch(
             <button :class="{ sorted: state.sort.by === 'baseScore' }" @click="sortBy('baseScore')">
               CVSS
               <Icon v-if="state.sort.by === 'baseScore'" :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
+            </button>
+          </th>
+          <th class="c-epss">
+            <button :class="{ sorted: state.sort.by === 'epss' }" title="Exploit Prediction Scoring System: probability of exploitation in the next 30 days" @click="sortBy('epss')">
+              EPSS
+              <Icon v-if="state.sort.by === 'epss'" :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
             </button>
           </th>
           <th class="c-id">
@@ -109,12 +120,19 @@ watch(
             </span>
             <span class="sev-text">{{ SEVERITY_LABEL[severityKey(cve.baseSeverity)] }}</span>
           </td>
+          <td class="c-epss num" :title="epssTitle(cve)">
+            <span class="epss" :class="epssLevel(cve.epss)">{{ fmtEpss(cve.epss) }}</span>
+            <span v-if="cve.epss" class="epss-bar"><span :style="{ width: cve.epssPercentile * 100 + '%' }" :class="epssLevel(cve.epss)" /></span>
+          </td>
           <td class="c-id">
             <a class="id mono" :href="`?cve=${cve.id}`" @click.prevent>{{ cve.id }}</a>
             <div class="id-badges">
               <span v-if="cve.inKEV && !isKev" class="badge kev" title="In CISA Known Exploited Vulnerabilities catalog">KEV</span>
               <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" class="badge danger" title="Known use in ransomware campaigns">
                 <Icon name="lock" :size="11" />Ransomware
+              </span>
+              <span v-if="cve.publicExploit && !cve.inKEV" class="badge warn" title="Public exploit, proof of concept, or active exploitation reported">
+                <Icon name="bug" :size="11" />Exploit
               </span>
             </div>
           </td>
@@ -235,6 +253,45 @@ tbody tr.selected td {
 .c-id {
   width: 160px;
 }
+.c-epss {
+  width: 70px;
+}
+.epss {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+.epss.low {
+  color: var(--text-2);
+}
+.epss.med {
+  color: var(--warn);
+}
+.epss.high {
+  color: var(--danger);
+}
+.epss-bar {
+  display: block;
+  width: 44px;
+  height: 3px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: var(--surface-hover);
+  overflow: hidden;
+}
+.epss-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.epss-bar span.med {
+  background: var(--warn);
+}
+.epss-bar span.high {
+  background: var(--danger);
+}
 .c-date {
   width: 118px;
   text-align: right;
@@ -345,7 +402,8 @@ th.c-due button {
     width: 132px;
   }
   .c-date,
-  .c-due {
+  .c-due,
+  .c-epss {
     display: none;
   }
   .c-score {

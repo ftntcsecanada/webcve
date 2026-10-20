@@ -16,11 +16,13 @@ import {
   activeFilterCount,
   fetchResults,
   fetchStats,
-  exportXlsx,
+  exportResults,
   readURL,
   startSync,
+  saved,
+  saveCurrentSearch,
 } from "./lib/store.js";
-import { SEVERITY_LABEL, ATTACK_VECTOR_LABEL, fmtNum, fmtRelative, fmtDate } from "./lib/format.js";
+import { SEVERITY_LABEL, ATTACK_VECTOR_LABEL, fmtNum, fmtRelative, fmtDate, fmtEpss } from "./lib/format.js";
 
 const f = state.filters;
 const isKev = computed(() => state.view === "kev");
@@ -183,6 +185,11 @@ const chips = computed(() => {
   if (f.kevOnly && !isKev.value) out.push({ key: "kev", label: "Known exploited", cls: "kev", remove: () => (f.kevOnly = false) });
   if (f.ransomware) out.push({ key: "rw", label: "Ransomware", remove: () => (f.ransomware = false) });
   if (f.kevDays) out.push({ key: "kd", label: `Added ≤ ${f.kevDays}d`, remove: () => (f.kevDays = 0) });
+  if (f.kevDue)
+    out.push({ key: "due", label: f.kevDue === "overdue" ? "Overdue" : `Due ≤ ${f.kevDue}d`, remove: () => (f.kevDue = "") });
+  if (f.exploit) out.push({ key: "x", label: "Exploit evidence", remove: () => (f.exploit = false) });
+  if (f.epssMin != null) out.push({ key: "epss", label: `EPSS ≥ ${fmtEpss(f.epssMin)}`, remove: () => (f.epssMin = null) });
+  if (f.since) out.push({ key: "since", label: `New since ${fmtDate(f.since)}`, cls: "accent", remove: () => (f.since = "") });
   f.severities.forEach((s) =>
     out.push({ key: `sev-${s}`, label: SEVERITY_LABEL[s], dot: s, remove: () => f.severities.splice(f.severities.indexOf(s), 1) })
   );
@@ -253,15 +260,27 @@ const freshness = computed(() => {
   const d = stats.value?.lastDataUpdate;
   if (!d) return null;
   const days = (Date.now() - new Date(d)) / 86400000;
-  return { text: fmtRelative(d), stale: days > 8 };
+  const s = stats.value.sources || {};
+  const fmt = (t) => (t && !t.startsWith("0001") ? new Date(t).toLocaleString() : "never");
+  const title = [
+    `CVE records: ${fmt(s.cve)}${s.cveDelta ? ` (${s.cveDelta})` : ""}`,
+    `KEV catalog: ${fmt(s.kev)}`,
+    `EPSS scores: ${fmt(s.epss)}${stats.value.epssDate ? ` (scores of ${stats.value.epssDate})` : ""}`,
+    stats.value.nextUpdateIn ? `Next check in ${stats.value.nextUpdateIn}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return { text: fmtRelative(d), stale: days > 2, title };
 });
 
 // ---- Export ----
 const exporting = ref(false);
-async function doExport() {
+const exportOpen = ref(false);
+async function doExport(format) {
+  exportOpen.value = false;
   exporting.value = true;
   try {
-    await exportXlsx();
+    await exportResults(format);
   } catch {
     results.error = "Export failed.";
   } finally {
@@ -269,14 +288,49 @@ async function doExport() {
   }
 }
 
+// ---- Save search ----
+const saveOpen = ref(false);
+const saveName = ref("");
+const saveInput = ref(null);
+function startSave() {
+  saveName.value = chips.value.map((c) => (c.prefix ? `${c.label}` : c.label)).join(" · ").slice(0, 60) || (isKev.value ? "Known exploited" : "All CVEs");
+  saveOpen.value = true;
+  setTimeout(() => saveInput.value?.select(), 0);
+}
+function confirmSave() {
+  if (!saveName.value.trim()) return;
+  saveCurrentSearch(saveName.value.trim());
+  saveOpen.value = false;
+}
+const activeSaved = computed(() => (saved.active ? saved.list.find((s) => s.id === saved.active.id) : null));
+
+const statusText = {
+  starting: "Starting up…",
+  downloading: "Downloading the CVE and KEV databases (first run can take several minutes)…",
+  loading: "Loading the CVE database…",
+  error: "The server couldn't load its data. Check the server logs.",
+};
+
 onMounted(() => {
   readURL();
   startSync();
   fetchResults();
   fetchStats();
   window.addEventListener("keydown", onKey);
+  window.addEventListener("mousedown", closePopovers);
 });
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKey);
+  window.removeEventListener("mousedown", closePopovers);
+});
+
+function closePopovers(e) {
+  if (!e.target.closest?.(".popover-anchor")) {
+    exportOpen.value = false;
+    saveOpen.value = false;
+  }
+  if (!e.target.closest?.(".help, .help-toggle")) showHelp.value = false;
+}
 </script>
 
 <template>
@@ -295,7 +349,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           v-model="f.q"
           class="search-input"
           type="search"
-          placeholder="Search CVE IDs, products, descriptions…"
+          placeholder="Search CVEs — try log4j, vendor:fortinet sev:critical, &quot;remote code&quot;"
           aria-label="Search"
           spellcheck="false"
           @keydown="onSearchKey"
@@ -314,12 +368,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             v-if="freshness"
             class="fresh"
             :class="{ stale: freshness.stale }"
-            :title="`Last data update ${new Date(stats.lastDataUpdate).toLocaleString()}${stats.nextUpdateIn ? ` · next refresh in ${stats.nextUpdateIn}` : ''}`"
+            :title="freshness.title"
           >
             <span class="fresh-dot" />{{ freshness.stale ? "Stale · " : "" }}updated {{ freshness.text }}
           </span>
         </div>
-        <button class="btn ghost icon" title="Keyboard shortcuts (?)" @click="showHelp = !showHelp"><Icon name="keyboard" /></button>
+        <button class="btn ghost icon help-toggle" title="Keyboard shortcuts and search syntax (?)" @click="showHelp = !showHelp"><Icon name="keyboard" /></button>
         <button class="btn ghost icon" :title="`Theme: ${theme}`" @click="cycleTheme"><Icon :name="themeIcon" /></button>
       </div>
     </header>
@@ -362,6 +416,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             <div class="tile-label">Added last 30 days</div>
             <div class="tile-value num">{{ fmtNum(stats.kevLast30Days) }}</div>
             <div class="tile-sub">{{ f.kevDays === 30 ? "Filtering · click to clear" : "Click to filter" }}</div>
+          </button>
+          <button class="tile clickable" :class="{ on: f.kevDue === '30' }" @click="f.kevDue = f.kevDue === '30' ? '' : '30'">
+            <div class="tile-label">Due next 30 days</div>
+            <div class="tile-value num">{{ fmtNum(stats.kevDueNext30) }}</div>
+            <div class="tile-sub">{{ f.kevDue === "30" ? "Filtering · click to clear" : "Click to filter" }}</div>
           </button>
           <button class="tile clickable" :class="{ on: f.ransomware }" @click="f.ransomware = !f.ransomware">
             <div class="tile-label">Ransomware-linked</div>
@@ -414,9 +473,31 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
                 <Icon :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="13" />
               </button>
             </label>
-            <button class="btn sm" :disabled="exporting || !results.total" title="Export up to 10,000 rows to Excel" @click="doExport">
-              <Icon name="download" :size="13" /> {{ exporting ? "Exporting…" : "Export" }}
-            </button>
+            <div class="popover-anchor">
+              <button class="btn sm" title="Save this search to the sidebar and track new matches" @click="saveOpen ? (saveOpen = false) : startSave()">
+                <Icon name="check" :size="13" /> Save search
+              </button>
+              <form v-if="saveOpen" class="popover" @submit.prevent="confirmSave" @keydown.esc.stop="saveOpen = false">
+                <label class="pop-label" for="save-name">Name</label>
+                <input id="save-name" ref="saveInput" v-model="saveName" class="input" maxlength="80" autocomplete="off" data-1p-ignore data-lpignore="true" />
+                <p class="pop-hint">Saved in this browser. The sidebar shows how many CVEs are new each time you come back.</p>
+                <div class="pop-actions">
+                  <button type="button" class="btn ghost sm" @click="saveOpen = false">Cancel</button>
+                  <button type="submit" class="btn sm primary">Save</button>
+                </div>
+              </form>
+            </div>
+            <div class="popover-anchor">
+              <button class="btn sm" :disabled="exporting || !results.total" :aria-expanded="exportOpen" @click="exportOpen = !exportOpen">
+                <Icon name="download" :size="13" /> {{ exporting ? "Exporting…" : "Export" }} <Icon name="chevronDown" :size="12" />
+              </button>
+              <div v-if="exportOpen" class="popover menu" role="menu" @keydown.esc.stop="exportOpen = false">
+                <button role="menuitem" @click="doExport('xlsx')">Excel (.xlsx)</button>
+                <button role="menuitem" @click="doExport('csv')">CSV</button>
+                <button role="menuitem" @click="doExport('json')">JSON (full records)</button>
+                <div class="pop-hint">Up to 10,000 rows, in the current sort order.</div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -430,6 +511,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <button class="btn ghost sm" @click="resetFilters">Clear all</button>
         </div>
 
+        <div v-if="activeSaved && saved.active.newCount && !f.since" class="new-banner">
+          <b class="num">{{ fmtNum(saved.active.newCount) }}</b> new in “{{ activeSaved.name }}” since {{ fmtDate(saved.active.previousSeen) }}
+          <button class="btn sm" @click="f.since = saved.active.previousSeen">Show only new</button>
+        </div>
+
         <div v-if="results.error" class="error">
           <Icon name="alert" /> {{ results.error }}
           <button class="btn sm" @click="fetchResults">Retry</button>
@@ -437,7 +523,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
         <!-- Table -->
         <div class="table-card">
-          <ResultsTable v-if="results.cves.length" v-model:cursor="cursor" @open="openCve" />
+          <div v-if="results.warming && !results.loaded" class="warming">
+            <span class="spinner big" />
+            <h3>{{ statusText[results.warming] || "Loading…" }}</h3>
+            <p class="muted">The page will fill in automatically when the data is ready.</p>
+          </div>
+          <ResultsTable v-else-if="results.cves.length" v-model:cursor="cursor" @open="openCve" />
           <div v-else-if="results.loaded && !results.loading" class="empty">
             <Icon name="search" :size="28" />
             <h3>No matching vulnerabilities</h3>
@@ -496,6 +587,18 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <div><dt><span class="kbd">[</span> <span class="kbd">]</span></dt><dd>Previous / next page</dd></div>
           <div><dt><span class="kbd">1</span> <span class="kbd">2</span></dt><dd>All CVEs / KEV view</dd></div>
           <div><dt><span class="kbd">f</span></dt><dd>Toggle filters (narrow screens)</dd></div>
+        </dl>
+        <div class="help-head syntax-head"><b>Search syntax</b></div>
+        <dl class="syntax">
+          <div><dt><code>log4j rce</code></dt><dd>All words, any order</dd></div>
+          <div><dt><code>"remote code"</code></dt><dd>Exact phrase</dd></div>
+          <div><dt><code>vendor:fortinet</code></dt><dd>Vendor contains</dd></div>
+          <div><dt><code>product:"pan-os"</code></dt><dd>Product contains</dd></div>
+          <div><dt><code>cwe:79</code></dt><dd>Weakness</dd></div>
+          <div><dt><code>sev:critical</code></dt><dd>Severity</dd></div>
+          <div><dt><code>kev:yes</code> <code>exploit:yes</code></dt><dd>Exploited / PoC</dd></div>
+          <div><dt><code>epss:>10%</code></dt><dd>EPSS minimum</dd></div>
+          <div><dt><code>year:2024</code> <code>av:network</code></dt><dd>Year, attack vector</dd></div>
         </dl>
       </div>
     </Transition>
@@ -710,7 +813,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 /* KEV tiles */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(3, minmax(140px, 1fr)) minmax(280px, 2.2fr);
+  grid-template-columns: repeat(4, minmax(120px, 1fr)) minmax(260px, 2fr);
   gap: 10px;
   margin-bottom: 16px;
 }
@@ -841,6 +944,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 }
 .head-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
 }
@@ -1031,13 +1136,128 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   }
 }
 
+.popover-anchor {
+  position: relative;
+}
+.popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 300px;
+  padding: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+.popover.menu {
+  width: 220px;
+  padding: 4px;
+}
+.popover.menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+}
+.popover.menu button:hover {
+  background: var(--surface-hover);
+}
+.popover.menu .pop-hint {
+  padding: 4px 10px 6px;
+}
+.pop-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.pop-hint {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn.primary:hover {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+.fchip.accent {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent-text);
+}
+.new-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 13px;
+}
+.new-banner .btn {
+  margin-left: auto;
+}
+.warming {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 72px 24px;
+  text-align: center;
+}
+.warming h3 {
+  margin: 16px 0 4px;
+  font-size: 15px;
+}
+.warming p {
+  margin: 0;
+}
+.spinner.big {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+.syntax-head {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.syntax code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+}
+
 /* ---- Help ---- */
 .help {
   position: fixed;
   right: 16px;
   top: 64px;
   z-index: 50;
-  width: 300px;
+  width: 340px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
   padding: 12px 14px;
   border-radius: var(--radius);
   background: var(--surface);
@@ -1075,7 +1295,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 /* ---- Responsive ---- */
 @media (max-width: 1180px) {
   .tiles {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
   }
   .tile.wide {
     grid-column: 1 / -1;
@@ -1139,8 +1359,9 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   .tiles {
     grid-template-columns: 1fr 1fr;
   }
-  .tile:first-child {
-    grid-column: 1 / -1;
+  .head-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
   .legend {
     display: none;

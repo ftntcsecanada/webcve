@@ -1,0 +1,20 @@
+# Deployed copy lives in /data/projects/webcve and is refreshed by build.sh.
+# Optional settings go in a root-only .env beside this file (never committed).
+version: "3.8"
+services:
+  webcve:
+    image: registry.fabriclab.ca:5000/webcve:latest
+    container_name: webcve
+    restart: unless-stopped
+    ports:
+      - "12095:3000"
+    environment:
+      - WEBCVE_ALERT_WEBHOOK=${WEBCVE_ALERT_WEBHOOK:-}
+      - WEBCVE_ALERT_VENDORS=${WEBCVE_ALERT_VENDORS:-}
+      - WEBCVE_ALERT_MIN_SCORE=${WEBCVE_ALERT_MIN_SCORE:-}
+      - WEBCVE_PUBLIC_URL=${WEBCVE_PUBLIC_URL:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    volumes:
+      - /data/webcve/cves:/app/cves
+      - /data/webcve/kev:/app/kev
+      - /data/webcve/cve_cache.gob:/app/cve_cache.gob

@@ -1,41 +1,28 @@
-# ----------------------------
-# Build the frontend
-FROM node:lts-alpine as frontend-build
+# Local build from a checkout. Production uses deploy/Dockerfile, which clones
+# the repo itself (see deploy/README.md).
 
+FROM node:22-alpine AS frontend
 WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ .
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+# vite builds into ../site
 RUN npm run build
 
-# ----------------------------
-# Build the backend
-FROM golang:1.25-alpine as backend-build
-
+FROM golang:1.27-alpine AS backend
 WORKDIR /app
-
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY *.go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o webcve
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o webcve
 
-# ----------------------------
-# Final image
-FROM alpine:latest
-
+FROM alpine:3
+RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
-
-# Copy the Go binary
-COPY --from=backend-build /app/webcve .
-
-# Copy the Vue frontend build (vite outputs to ../site, which the server serves)
-COPY --from=frontend-build /app/site ./site
-
-# Create directories for data that will be mounted
-RUN mkdir -p /app/cves /app/kev
-
-# Expose port
+COPY --from=backend /app/webcve ./
+COPY --from=frontend /app/site ./site
+RUN mkdir -p cves kev
 EXPOSE 3000
-
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1
 CMD ["/app/webcve"]

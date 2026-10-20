@@ -1,8 +1,8 @@
-import { reactive, ref, watch, computed } from "vue";
+import { reactive, ref, watch } from "vue";
 
 // ---- Filter state ----
 
-function emptyFilters() {
+export function emptyFilters() {
   return {
     q: "",
     severities: [],
@@ -10,13 +10,17 @@ function emptyFilters() {
     kevOnly: false,
     ransomware: false,
     kevDays: 0,
+    kevDue: "",
     yearFrom: null,
     yearTo: null,
     scoreMin: null,
     scoreMax: null,
+    epssMin: null,
+    exploit: false,
     vendors: [],
     products: [],
     cwe: "",
+    since: "",
   };
 }
 
@@ -30,6 +34,7 @@ export const SORTS = {
     ["datePublished", "Published"],
     ["dateUpdated", "Updated"],
     ["baseScore", "CVSS score"],
+    ["epss", "EPSS (exploit likelihood)"],
     ["id", "CVE ID"],
     ["vendor", "Vendor"],
   ],
@@ -37,6 +42,7 @@ export const SORTS = {
     ["kevDateAdded", "Date added to KEV"],
     ["kevDueDate", "Remediation due"],
     ["baseScore", "CVSS score"],
+    ["epss", "EPSS (exploit likelihood)"],
     ["datePublished", "Published"],
     ["id", "CVE ID"],
     ["vendor", "Vendor"],
@@ -55,10 +61,11 @@ export const state = reactive({
 export const results = reactive({
   loading: false,
   error: null,
+  warming: null, // server status while the dataset loads
   cves: [],
   total: 0,
   totalPages: 0,
-  facets: { severity: {}, attackVector: {}, kev: 0, ransomware: 0 },
+  facets: { severity: {}, attackVector: {}, kev: 0, ransomware: 0, exploit: 0 },
   yearCounts: [],
   kevMonths: [],
   tookMs: 0,
@@ -73,11 +80,10 @@ export function activeFilterCount() {
   if (f.q) n++;
   n += f.severities.length + f.attackVectors.length + f.vendors.length + f.products.length;
   if (f.kevOnly && state.view !== "kev") n++;
-  if (f.ransomware) n++;
-  if (f.kevDays) n++;
+  for (const k of ["ransomware", "kevDays", "kevDue", "cwe", "exploit", "since"]) if (f[k]) n++;
   if (f.yearFrom || f.yearTo) n++;
   if (f.scoreMin != null || f.scoreMax != null) n++;
-  if (f.cwe) n++;
+  if (f.epssMin != null) n++;
   return n;
 }
 
@@ -92,6 +98,7 @@ export function setView(view) {
   if (view !== "kev") {
     state.filters.ransomware = false;
     state.filters.kevDays = 0;
+    state.filters.kevDue = "";
   }
 }
 
@@ -107,14 +114,8 @@ export function addUnique(list, value) {
 
 // ---- API ----
 
-function buildRequest() {
-  const f = state.filters;
-  const req = {
-    page: state.page,
-    pageSize: state.pageSize,
-    sortBy: state.sort.by,
-    sortDesc: state.sort.desc,
-  };
+function buildRequest(view, f) {
+  const req = {};
   if (f.q.trim()) req.search = f.q.trim();
   if (f.severities.length) req.severities = f.severities;
   if (f.attackVectors.length) req.attackVectors = f.attackVectors;
@@ -125,13 +126,38 @@ function buildRequest() {
   if (f.yearTo) req.yearTo = f.yearTo;
   if (f.scoreMin != null) req.scoreMin = f.scoreMin;
   if (f.scoreMax != null) req.scoreMax = f.scoreMax;
-  if (state.view === "kev" || f.kevOnly) req.inKEV = true;
-  if (f.ransomware) req.ransomware = true;
-  if (f.kevDays) req.kevAddedDays = f.kevDays;
+  if (f.epssMin != null) req.epssMin = f.epssMin;
+  if (f.exploit) req.publicExploit = true;
+  if (view === "kev" || f.kevOnly) req.inKEV = true;
+  if (view === "kev" && f.ransomware) req.ransomware = true;
+  if (view === "kev" && f.kevDays) req.kevAddedDays = f.kevDays;
+  if (view === "kev" && f.kevDue) req.kevDue = f.kevDue;
+  if (f.since) req.changedSince = f.since;
   return req;
 }
 
+function currentRequest() {
+  return {
+    ...buildRequest(state.view, state.filters),
+    page: state.page,
+    pageSize: state.pageSize,
+    sortBy: state.sort.by,
+    sortDesc: state.sort.desc,
+  };
+}
+
+async function postJSON(url, body, signal) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  return res;
+}
+
 let inflight = null;
+let warmTimer = null;
 
 export async function fetchResults() {
   inflight?.abort();
@@ -139,12 +165,18 @@ export async function fetchResults() {
   inflight = ctrl;
   results.loading = true;
   try {
-    const res = await fetch("/api/cves", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildRequest()),
-      signal: ctrl.signal,
-    });
+    const res = await postJSON("/api/cves", currentRequest(), ctrl.signal);
+    if (res.status === 503) {
+      // Dataset still loading: show progress and retry
+      const body = await res.json().catch(() => ({}));
+      results.warming = body.status || "loading";
+      clearTimeout(warmTimer);
+      warmTimer = setTimeout(() => {
+        fetchResults();
+        fetchStats();
+      }, 2000);
+      return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     Object.assign(results, {
@@ -156,6 +188,7 @@ export async function fetchResults() {
       kevMonths: data.kevMonths || [],
       tookMs: data.tookMs,
       error: null,
+      warming: null,
       loaded: true,
     });
   } catch (e) {
@@ -190,41 +223,36 @@ export async function fetchCve(id) {
   return cve;
 }
 
+export async function fetchRelated(id) {
+  const res = await fetch(`/api/cves/${encodeURIComponent(id)}/related`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export async function searchOptions(field, search, extra = {}) {
-  const res = await fetch("/api/options/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ field, search, limit: 50, ...extra }),
-  });
+  const res = await postJSON("/api/options/search", { field, search, limit: 50, ...extra });
   if (!res.ok) return [];
   return (await res.json()) || [];
 }
 
-export async function exportXlsx() {
-  const req = buildRequest();
-  delete req.page;
-  delete req.pageSize;
-  const res = await fetch("/api/export", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
+export async function exportResults(format) {
+  const req = { ...buildRequest(state.view, state.filters), sortBy: state.sort.by, sortDesc: state.sort.desc };
+  const res = await postJSON(`/api/export?format=${format}`, req);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${state.view === "kev" ? "kev" : "cve"}_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.download = `${state.view === "kev" ? "kev" : "cve"}_export_${new Date().toISOString().slice(0, 10)}.${format}`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
-// ---- URL sync ----
+// ---- URL (de)serialization ----
 // Lists use repeated params (v=a&v=b) because vendor/product names can contain commas.
 
-export function writeURL() {
-  const f = state.filters;
+function toQuery(view, f, sort, extra = {}) {
   const p = new URLSearchParams();
-  if (state.view !== "all") p.set("view", state.view);
+  if (view !== "all") p.set("view", view);
   if (f.q) p.set("q", f.q);
   f.severities.forEach((v) => p.append("sev", v));
   f.attackVectors.forEach((v) => p.append("av", v));
@@ -234,27 +262,30 @@ export function writeURL() {
   if (f.kevOnly) p.set("kev", "1");
   if (f.ransomware) p.set("rw", "1");
   if (f.kevDays) p.set("kd", f.kevDays);
+  if (f.kevDue) p.set("due", f.kevDue);
   if (f.yearFrom) p.set("yf", f.yearFrom);
   if (f.yearTo) p.set("yt", f.yearTo);
   if (f.scoreMin != null) p.set("smin", f.scoreMin);
   if (f.scoreMax != null) p.set("smax", f.scoreMax);
-  const def = VIEWS[state.view].defaultSort;
-  if (state.sort.by !== def.by || state.sort.desc !== def.desc) {
-    p.set("sort", state.sort.by);
-    p.set("dir", state.sort.desc ? "desc" : "asc");
+  if (f.epssMin != null) p.set("epss", f.epssMin);
+  if (f.exploit) p.set("x", "1");
+  if (f.since) p.set("since", f.since);
+  if (sort) {
+    const def = VIEWS[view].defaultSort;
+    if (sort.by !== def.by || sort.desc !== def.desc) {
+      p.set("sort", sort.by);
+      p.set("dir", sort.desc ? "desc" : "asc");
+    }
   }
-  if (state.page > 1) p.set("page", state.page);
-  if (state.selectedId) p.set("cve", state.selectedId);
-  const qs = p.toString();
-  history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
+  for (const [k, v] of Object.entries(extra)) if (v) p.set(k, v);
+  return p.toString();
 }
 
-export function readURL() {
-  const p = new URLSearchParams(location.search);
-  const f = state.filters;
+export function fromQuery(qs) {
+  const p = new URLSearchParams(qs);
+  const f = emptyFilters();
   const num = (k) => (p.has(k) && !isNaN(parseFloat(p.get(k))) ? parseFloat(p.get(k)) : null);
-  state.view = p.get("view") === "kev" ? "kev" : "all";
-  state.sort = { ...VIEWS[state.view].defaultSort };
+  const view = p.get("view") === "kev" ? "kev" : "all";
   f.q = p.get("q") || "";
   f.severities = p.getAll("sev");
   f.attackVectors = p.getAll("av");
@@ -264,13 +295,106 @@ export function readURL() {
   f.kevOnly = p.get("kev") === "1";
   f.ransomware = p.get("rw") === "1";
   f.kevDays = num("kd") || 0;
+  f.kevDue = p.get("due") || "";
   f.yearFrom = num("yf");
   f.yearTo = num("yt");
   f.scoreMin = num("smin");
   f.scoreMax = num("smax");
-  if (p.has("sort")) state.sort = { by: p.get("sort"), desc: p.get("dir") !== "asc" };
-  state.page = num("page") || 1;
-  state.selectedId = p.get("cve");
+  f.epssMin = num("epss");
+  f.exploit = p.get("x") === "1";
+  f.since = p.get("since") || "";
+  const sort = p.has("sort") ? { by: p.get("sort"), desc: p.get("dir") !== "asc" } : { ...VIEWS[view].defaultSort };
+  return { view, filters: f, sort, page: num("page") || 1, cve: p.get("cve") };
+}
+
+export function currentQuery({ withSort = true } = {}) {
+  return toQuery(state.view, state.filters, withSort ? state.sort : null);
+}
+
+export function writeURL() {
+  const qs = toQuery(state.view, state.filters, state.sort, {
+    page: state.page > 1 ? state.page : "",
+    cve: state.selectedId || "",
+  });
+  history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
+}
+
+export function applyQuery(qs) {
+  const q = fromQuery(qs);
+  state.view = q.view;
+  Object.assign(state.filters, q.filters);
+  state.sort = q.sort;
+  state.page = q.page;
+  if (q.cve !== undefined) state.selectedId = q.cve;
+}
+
+export function readURL() {
+  applyQuery(location.search);
+}
+
+// ---- Saved searches ----
+// Kept in localStorage per browser. Each remembers when it was last opened so
+// it can show how many CVEs were published or added to KEV since.
+
+const SAVED_KEY = "webcve.saved";
+
+function loadSaved() {
+  try {
+    const v = JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+export const saved = reactive({ list: loadSaved(), counts: {}, active: null });
+
+function persistSaved() {
+  try {
+    localStorage.setItem(SAVED_KEY, JSON.stringify(saved.list));
+  } catch {
+    // Private mode: saved searches last for this session only
+  }
+}
+
+export function saveCurrentSearch(name) {
+  const entry = { id: crypto.randomUUID?.() || String(Date.now()), name, query: currentQuery(), lastSeen: new Date().toISOString() };
+  saved.list.push(entry);
+  persistSaved();
+  saved.active = { id: entry.id, previousSeen: entry.lastSeen };
+  saved.counts[entry.id] = 0;
+}
+
+export function removeSaved(id) {
+  saved.list = saved.list.filter((s) => s.id !== id);
+  delete saved.counts[id];
+  if (saved.active?.id === id) saved.active = null;
+  persistSaved();
+}
+
+export function openSaved(entry) {
+  applyQuery(entry.query);
+  state.filters.since = "";
+  state.selectedId = null;
+  saved.active = { id: entry.id, previousSeen: entry.lastSeen, newCount: saved.counts[entry.id] || 0 };
+  entry.lastSeen = new Date().toISOString();
+  saved.counts[entry.id] = 0;
+  persistSaved();
+}
+
+export async function refreshSavedCounts() {
+  await Promise.all(
+    saved.list.map(async (s) => {
+      const { view, filters } = fromQuery(s.query);
+      const req = { ...buildRequest(view, { ...filters, since: s.lastSeen }), countOnly: true };
+      try {
+        const res = await postJSON("/api/cves", req);
+        if (res.ok) saved.counts[s.id] = (await res.json()).total;
+      } catch {
+        // Leave the previous count
+      }
+    })
+  );
 }
 
 // ---- Wiring ----
@@ -290,6 +414,21 @@ export function startSync() {
   watch(() => [state.sort.by, state.sort.desc, state.pageSize], () => schedule(true));
   watch(() => state.page, () => schedule(false));
   watch(() => [state, state.filters], writeURL, { deep: true });
-}
 
-export const isKevView = computed(() => state.view === "kev");
+  // Saved search badges follow data refreshes
+  watch(
+    () => stats.value?.sources?.cve,
+    (v) => v && refreshSavedCounts()
+  );
+  // Leaving a saved search's exact query ends its "new since" context
+  watch(
+    () => currentQuery({ withSort: false }),
+    (qs) => {
+      const a = saved.active;
+      if (!a) return;
+      const entry = saved.list.find((s) => s.id === a.id);
+      const base = fromQuery(entry?.query || "");
+      if (!entry || qs.replace(/&?since=[^&]*/, "") !== toQuery(base.view, base.filters, null)) saved.active = null;
+    }
+  );
+}

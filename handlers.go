@@ -222,7 +222,7 @@ const exportLimit = 10000
 
 var exportHeaders = []string{
 	"CVE ID", "Year", "Vendor", "Product", "Title", "Severity", "Score", "CVSS Version", "Attack Vector",
-	"CVSS Vector", "EPSS", "EPSS Percentile", "Public Exploit", "CWE", "Published", "Updated",
+	"CVSS Vector", "EPSS", "EPSS Percentile", "Exploit Evidence", "CWE", "Published", "Updated",
 	"In KEV", "KEV Date Added", "KEV Due Date", "KEV Required Action", "KEV Ransomware", "Description",
 }
 

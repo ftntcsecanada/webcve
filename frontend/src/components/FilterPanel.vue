@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import Icon from "./Icon.vue";
 import Combobox from "./Combobox.vue";
-import { state, results, toggleIn, resetFilters, activeFilterCount } from "../lib/store.js";
+import { state, results, saved, toggleIn, resetFilters, activeFilterCount, openSaved, removeSaved } from "../lib/store.js";
 import { SEVERITIES, SEVERITY_LABEL, ATTACK_VECTORS, ATTACK_VECTOR_LABEL, fmtNum } from "../lib/format.js";
 
 defineEmits(["close"]);
@@ -24,6 +24,20 @@ const kevDayOptions = [
   [30, "30 days"],
   [90, "90 days"],
   [365, "1 year"],
+];
+
+const epssPresets = [
+  [null, "Any"],
+  [0.01, "≥1%"],
+  [0.1, "≥10%"],
+  [0.5, "≥50%"],
+];
+
+const duePresets = [
+  ["", "Any"],
+  ["overdue", "Overdue"],
+  ["7", "≤ 7 days"],
+  ["30", "≤ 30 days"],
 ];
 
 const scorePresets = [
@@ -64,6 +78,22 @@ function onNumber(key, e) {
       <button class="btn ghost sm icon close" aria-label="Close filters" @click="$emit('close')"><Icon name="x" /></button>
     </div>
 
+    <section v-if="saved.list.length" class="group saved">
+      <h3>Saved searches</h3>
+      <ul class="saved-list">
+        <li v-for="s in saved.list" :key="s.id" :class="{ on: saved.active?.id === s.id }">
+          <button class="saved-open" :title="`Open “${s.name}”`" @click="openSaved(s)">
+            <Icon name="search" :size="13" />
+            <span class="saved-name">{{ s.name }}</span>
+            <span v-if="saved.counts[s.id]" class="saved-new num" :title="`${saved.counts[s.id]} published or added to KEV since you last opened it`">
+              {{ fmtNum(saved.counts[s.id]) }} new
+            </span>
+          </button>
+          <button class="saved-x" :aria-label="`Delete saved search ${s.name}`" @click="removeSaved(s.id)"><Icon name="x" :size="12" /></button>
+        </li>
+      </ul>
+    </section>
+
     <section v-if="!isKev" class="group">
       <label class="switch-row">
         <span class="switch-label">
@@ -76,6 +106,12 @@ function onNumber(key, e) {
     </section>
 
     <template v-else>
+      <section class="group">
+        <h3>Remediation due</h3>
+        <div class="seg">
+          <button v-for="[v, label] in duePresets" :key="v" :class="{ on: f.kevDue === v }" @click="f.kevDue = v">{{ label }}</button>
+        </div>
+      </section>
       <section class="group">
         <h3>Added to catalog</h3>
         <div class="seg">
@@ -115,6 +151,22 @@ function onNumber(key, e) {
           <span class="count num">{{ fmtNum(results.facets.severity?.[s]) }}</span>
           <span class="bar" :style="{ width: ((results.facets.severity?.[s] || 0) / maxSev) * 100 + '%' }" />
         </button>
+      </div>
+    </section>
+
+    <section class="group">
+      <label class="switch-row">
+        <span class="switch-label"><Icon name="bug" :size="14" /> Exploit evidence</span>
+        <span class="count num">{{ fmtNum(results.facets.exploit) }}</span>
+        <input v-model="f.exploit" type="checkbox" class="switch" />
+      </label>
+      <p class="hint">Public proof of concept, exploit code, or active exploitation (CISA SSVC and exploit references).</p>
+    </section>
+
+    <section class="group">
+      <h3 title="Exploit Prediction Scoring System: probability of exploitation activity in the next 30 days">Exploit likelihood (EPSS)</h3>
+      <div class="seg">
+        <button v-for="[v, label] in epssPresets" :key="label" :class="{ on: f.epssMin === v }" @click="f.epssMin = v">{{ label }}</button>
       </div>
     </section>
 
@@ -364,6 +416,79 @@ h3 {
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+}
+.hint {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.saved-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.saved-list li {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+.saved-list li:hover,
+.saved-list li.on {
+  background: var(--surface-hover);
+}
+.saved-list li.on .saved-name {
+  font-weight: 600;
+}
+.saved-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: var(--text-2);
+}
+.saved-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+}
+.saved-new {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.saved-x {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-3);
+  opacity: 0;
+}
+.saved-list li:hover .saved-x,
+.saved-x:focus-visible {
+  opacity: 1;
+}
+.saved-x:hover {
+  color: var(--text);
 }
 .range {
   display: flex;

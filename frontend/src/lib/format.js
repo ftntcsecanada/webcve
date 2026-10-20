@@ -179,3 +179,35 @@ export function splitUrl(url) {
     return { host: url, path: "" };
   }
 }
+
+// EPSS is a probability (0..1); show it as a percentage with sensible precision
+export function fmtEpss(p) {
+  if (p == null || p <= 0) return "—";
+  const pct = p * 100;
+  if (pct >= 99.95) return ">99.9%";
+  if (pct >= 10) return `${pct.toFixed(1).replace(/\.0$/, "")}%`;
+  if (pct >= 1) return `${pct.toFixed(1)}%`;
+  return `${pct.toFixed(2)}%`;
+}
+
+// EPSS bands used for emphasis: ≥10% is unusually likely to be exploited
+export function epssLevel(p) {
+  if (!p) return "none";
+  if (p >= 0.5) return "high";
+  if (p >= 0.1) return "med";
+  return "low";
+}
+
+// EPSS percentile (0..1) as a phrase: "Top 0.1%" reads better than "higher than 100%"
+export function fmtPercentile(p) {
+  if (p == null) return "";
+  if (p >= 0.999) return "Top 0.1% of CVEs";
+  if (p >= 0.99) return "Top 1% of CVEs";
+  return `Higher than ${Math.floor(p * 100)}% of CVEs`;
+}
+
+export const SSVC_LABEL = {
+  exploitation: { none: "No known exploitation", poc: "Proof of concept public", active: "Actively exploited" },
+  automatable: { yes: "Automatable", no: "Not automatable" },
+  technicalImpact: { total: "Total impact", partial: "Partial impact" },
+};
