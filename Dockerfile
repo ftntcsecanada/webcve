@@ -10,7 +10,7 @@ RUN npm run build
 
 # ----------------------------
 # Build the backend
-FROM golang:1.22-alpine as backend-build
+FROM golang:1.25-alpine as backend-build
 
 WORKDIR /app
 
@@ -29,8 +29,8 @@ WORKDIR /app
 # Copy the Go binary
 COPY --from=backend-build /app/webcve .
 
-# Copy the Vue frontend dist
-COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+# Copy the Vue frontend build (vite outputs to ../site, which the server serves)
+COPY --from=frontend-build /app/site ./site
 
 # Create directories for data that will be mounted
 RUN mkdir -p /app/cves /app/kev

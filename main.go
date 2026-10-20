@@ -79,6 +79,7 @@ type CVE struct {
 	KEVRequiredAction          string `json:"kevRequiredAction,omitempty"`
 	KEVKnownRansomwareCampaign string `json:"kevKnownRansomwareCampaign,omitempty"`
 	KEVNotes                   string `json:"kevNotes,omitempty"`
+	KEVVulnerabilityName       string `json:"kevName,omitempty"`
 
 	// File path for cache validation
 	FilePath string `json:"-"`
@@ -176,11 +177,11 @@ type Cache struct {
 
 // KEVCatalog represents the CISA Known Exploited Vulnerabilities catalog
 type KEVCatalog struct {
-	Title           string           `json:"title"`
-	CatalogVersion  string           `json:"catalogVersion"`
-	DateReleased    string           `json:"dateReleased"`
-	Count           int              `json:"count"`
-	Vulnerabilities []KEVEntry       `json:"vulnerabilities"`
+	Title           string     `json:"title"`
+	CatalogVersion  string     `json:"catalogVersion"`
+	DateReleased    string     `json:"dateReleased"`
+	Count           int        `json:"count"`
+	Vulnerabilities []KEVEntry `json:"vulnerabilities"`
 }
 
 // KEVEntry represents a single entry in the KEV catalog
@@ -228,72 +229,38 @@ type App struct {
 	years      []int
 	cwes       []string
 
+	productCounts map[string]int
+
 	// Update tracking
 	lastDataUpdate time.Time
+
+	// Lowercased search haystack per CVE, aligned with cves
+	searchText []string
+
+	// Cached ascending sort orders (CVE indexes) keyed by sort field
+	orders  map[string][]int
+	orderMu sync.Mutex
+
+	// KEV catalog metadata
+	kevCatalogDate string
 
 	// Cached stats
 	cachedStats *StatsResponse
 }
 
-// FilterRequest represents incoming filter parameters
-type FilterRequest struct {
-	Year         *int     `json:"year"`
-	YearFrom     *int     `json:"yearFrom"`
-	YearTo       *int     `json:"yearTo"`
-	Vendor       string   `json:"vendor"`   // Single vendor (legacy)
-	Product      string   `json:"product"`  // Single product (legacy)
-	Vendors      []string `json:"vendors"`  // Multiple vendors
-	Products     []string `json:"products"` // Multiple products
-	Severity     string   `json:"severity"`
-	Search       string   `json:"search"`
-	CWE          string   `json:"cwe"`
-	ScoreMin     *float64 `json:"scoreMin"`
-	ScoreMax     *float64 `json:"scoreMax"`
-	InKEV        *bool    `json:"inKEV"` // Filter by CISA KEV status
-	SortBy       string   `json:"sortBy"`
-	SortDesc     bool     `json:"sortDesc"`
-	Page         int      `json:"page"`
-	PageSize     int      `json:"pageSize"`
-}
-
-// FilterResponse contains filtered results and metadata
-type FilterResponse struct {
-	CVEs       []CVE         `json:"cves"`
-	Total      int           `json:"total"`
-	Page       int           `json:"page"`
-	PageSize   int           `json:"pageSize"`
-	TotalPages int           `json:"totalPages"`
-	Options    FilterOptions `json:"options"`
-	YearCounts []YearCount   `json:"yearCounts"`
-}
-
-// YearCount represents CVE count for a specific year with severity breakdown
-type YearCount struct {
-	Year     int            `json:"year"`
-	Count    int            `json:"count"`
-	Severity map[string]int `json:"severity"` // Breakdown by severity: CRITICAL, HIGH, MEDIUM, LOW
-}
-
-// FilterOptions provides available filter values
-type FilterOptions struct {
-	Vendors       []string `json:"vendors"`
-	Products      []string `json:"products"`
-	Severities    []string `json:"severities"`
-	Years         []int    `json:"years"`
-	CWEs          []string `json:"cwes"`
-	AttackVectors []string `json:"attackVectors"`
-}
-
 // StatsResponse provides database statistics
 type StatsResponse struct {
-	TotalCVEs        int            `json:"totalCves"`
-	LastUpdated      time.Time      `json:"lastUpdated"`
-	LastDataUpdate   time.Time      `json:"lastDataUpdate"`
-	NextUpdateIn     string         `json:"nextUpdateIn"`
-	YearRange        [2]int         `json:"yearRange"`
-	TopVendors       []VendorCount  `json:"topVendors"`
-	SeverityCounts   map[string]int `json:"severityCounts"`
-	TotalKEV         int            `json:"totalKev"`
+	TotalCVEs      int            `json:"totalCves"`
+	LastUpdated    time.Time      `json:"lastUpdated"`
+	LastDataUpdate time.Time      `json:"lastDataUpdate"`
+	NextUpdateIn   string         `json:"nextUpdateIn"`
+	YearRange      [2]int         `json:"yearRange"`
+	TopVendors     []VendorCount  `json:"topVendors"`
+	SeverityCounts map[string]int `json:"severityCounts"`
+	TotalKEV       int            `json:"totalKev"`
+	KEVRansomware  int            `json:"kevRansomware"`
+	KEVLast30Days  int            `json:"kevLast30Days"`
+	KEVCatalogDate string         `json:"kevCatalogDate"`
 }
 
 type VendorCount struct {
@@ -326,9 +293,8 @@ func main() {
 		return
 	}
 
-	// Build filter option caches and stats
-	app.buildFilterCaches()
-	app.buildStatsCache()
+	// Build filter option caches, search index and stats
+	app.buildIndexes()
 
 	// Set initial last update time from cache file or current time
 	if info, err := os.Stat(CachePath); err == nil {
@@ -380,6 +346,7 @@ func (app *App) loadKEV() error {
 		return err
 	}
 
+	app.kevCatalogDate = catalog.DateReleased
 	for i := range catalog.Vulnerabilities {
 		entry := &catalog.Vulnerabilities[i]
 		app.kevIndex[entry.CveID] = entry
@@ -468,8 +435,13 @@ func (app *App) loadCVEs() error {
 // applyKEVStatus marks CVEs that are in the CISA KEV catalog and populates KEV details
 func (app *App) applyKEVStatus() {
 	for i := range app.cves {
+		cve := &app.cves[i]
+		cve.InKEV = false
+		cve.KEVDateAdded, cve.KEVDueDate, cve.KEVRequiredAction = "", "", ""
+		cve.KEVKnownRansomwareCampaign, cve.KEVNotes, cve.KEVVulnerabilityName = "", "", ""
 		if kevEntry := app.kevIndex[app.cves[i].ID]; kevEntry != nil {
 			app.cves[i].InKEV = true
+			app.cves[i].KEVVulnerabilityName = kevEntry.VulnerabilityName
 			app.cves[i].KEVDateAdded = kevEntry.DateAdded
 			app.cves[i].KEVDueDate = kevEntry.DueDate
 			app.cves[i].KEVRequiredAction = kevEntry.RequiredAction
@@ -818,6 +790,7 @@ func (app *App) performUpdate() {
 		}
 		// Reapply KEV status to existing CVEs
 		app.applyKEVStatus()
+		app.buildIndexes()
 		app.mu.Unlock()
 	}
 
@@ -835,8 +808,7 @@ func (app *App) performUpdate() {
 		if err := app.loadCVEs(); err != nil {
 			fmt.Printf("Error reloading CVE database: %v\n", err)
 		} else {
-			app.buildFilterCaches()
-			app.buildStatsCache()
+			app.buildIndexes()
 			fmt.Printf("Reloaded %d CVEs (%d in CISA KEV)\n", len(app.cves), app.cachedStats.TotalKEV)
 			updateSuccess = true
 		}
@@ -1173,19 +1145,37 @@ func deriveSeverityFromScore(score float64) string {
 	}
 }
 
+// buildIndexes rebuilds everything derived from app.cves; callers hold the write lock
+func (app *App) buildIndexes() {
+	app.orderMu.Lock()
+	app.orders = nil
+	app.orderMu.Unlock()
+	app.buildFilterCaches()
+	app.buildSearchIndex()
+	app.buildStatsCache()
+}
+
 func (app *App) buildFilterCaches() {
-	vendorSet := make(map[string]bool)
-	productSet := make(map[string]bool)
+	app.years = nil
+	vendorCounts := make(map[string]int)
+	productCounts := make(map[string]int)
+	cweCounts := make(map[string]int)
 	severitySet := make(map[string]bool)
 	yearSet := make(map[int]bool)
-	cweSet := make(map[string]bool)
 
-	for _, cve := range app.cves {
-		if cve.Vendor != "" {
-			vendorSet[cve.Vendor] = true
-		}
-		if cve.Product != "" {
-			productSet[cve.Product] = true
+	for i := range app.cves {
+		cve := &app.cves[i]
+		// Count every affected vendor/product once per CVE, not just the primary one
+		seen := make(map[string]bool, len(cve.AffectedProducts)*2)
+		for _, ap := range cve.AffectedProducts {
+			if !isPlaceholderName(ap.Vendor) && !seen["v"+ap.Vendor] {
+				seen["v"+ap.Vendor] = true
+				vendorCounts[ap.Vendor]++
+			}
+			if !isPlaceholderName(ap.Product) && !seen["p"+ap.Product] {
+				seen["p"+ap.Product] = true
+				productCounts[ap.Product]++
+			}
 		}
 		if cve.BaseSeverity != "" {
 			severitySet[cve.BaseSeverity] = true
@@ -1194,24 +1184,67 @@ func (app *App) buildFilterCaches() {
 			yearSet[cve.Year] = true
 		}
 		if cve.CWE != "" {
-			cweSet[cve.CWE] = true
+			cweCounts[cve.CWE]++
 		}
 	}
 
-	app.vendors = mapKeysToSlice(vendorSet)
-	app.products = mapKeysToSlice(productSet)
+	app.vendors = keysByCount(vendorCounts)
+	app.products = keysByCount(productCounts)
+	app.cwes = keysByCount(cweCounts)
+	app.productCounts = productCounts
 	app.severities = mapKeysToSlice(severitySet)
-	app.cwes = mapKeysToSlice(cweSet)
+	sort.Strings(app.severities)
 
 	for year := range yearSet {
 		app.years = append(app.years, year)
 	}
-
-	sort.Strings(app.vendors)
-	sort.Strings(app.products)
-	sort.Strings(app.severities)
-	sort.Strings(app.cwes)
 	sort.Sort(sort.Reverse(sort.IntSlice(app.years)))
+}
+
+// keysByCount returns map keys ordered by descending count, then name
+func keysByCount(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+// isPlaceholderName reports vendor/product values that carry no information
+func isPlaceholderName(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "n/a", "na", "unknown", "unspecified", "-", "*":
+		return true
+	}
+	return false
+}
+
+// rankMatches returns up to limit items containing search, prefix matches first,
+// preserving the source order (most common first) within each group
+func rankMatches(source []string, search string, limit int) []string {
+	if search == "" {
+		return source[:min(limit, len(source))]
+	}
+	var prefix, contains []string
+	for _, item := range source {
+		lower := strings.ToLower(item)
+		if strings.HasPrefix(lower, search) {
+			prefix = append(prefix, item)
+			if len(prefix) >= limit {
+				break
+			}
+		} else if len(contains) < limit && strings.Contains(lower, search) {
+			contains = append(contains, item)
+		}
+	}
+	out := append(prefix, contains...)
+	return out[:min(limit, len(out))]
 }
 
 func mapKeysToSlice(m map[string]bool) []string {
@@ -1220,327 +1253,6 @@ func mapKeysToSlice(m map[string]bool) []string {
 		keys = append(keys, k)
 	}
 	return keys
-}
-
-func (app *App) handleFilterCVEs(c echo.Context) error {
-	var req FilterRequest
-	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
-	}
-
-	// Default pagination
-	if req.PageSize <= 0 {
-		req.PageSize = 50
-	}
-	if req.PageSize > 1000 {
-		req.PageSize = 1000
-	}
-	if req.Page < 1 {
-		req.Page = 1
-	}
-
-	app.mu.RLock()
-	defer app.mu.RUnlock()
-
-	// Filter CVEs
-	var filtered []CVE
-	for _, cve := range app.cves {
-		if !app.matchesFilter(&cve, &req) {
-			continue
-		}
-		// Create a copy to potentially modify the display vendor/product
-		cveCopy := cve
-		// If filtering by vendor/product, update display to show the matched one
-		app.updateDisplayVendorProduct(&cveCopy, &req)
-		filtered = append(filtered, cveCopy)
-	}
-
-	// Sort
-	app.sortCVEs(filtered, req.SortBy, req.SortDesc)
-
-	// Paginate
-	total := len(filtered)
-	totalPages := (total + req.PageSize - 1) / req.PageSize
-
-	start := (req.Page - 1) * req.PageSize
-	end := start + req.PageSize
-	if start > total {
-		start = total
-	}
-	if end > total {
-		end = total
-	}
-
-	pagedCVEs := filtered[start:end]
-
-	// Calculate year counts for the last 10 years from filtered results with severity breakdown
-	currentYear := time.Now().Year()
-	yearCountMap := make(map[int]int)
-	yearSeverityMap := make(map[int]map[string]int)
-	for _, cve := range filtered {
-		if cve.Year >= currentYear-9 && cve.Year <= currentYear {
-			yearCountMap[cve.Year]++
-			if yearSeverityMap[cve.Year] == nil {
-				yearSeverityMap[cve.Year] = make(map[string]int)
-			}
-			if cve.BaseSeverity != "" {
-				yearSeverityMap[cve.Year][cve.BaseSeverity]++
-			} else {
-				yearSeverityMap[cve.Year]["NONE"]++
-			}
-		}
-	}
-
-	// Convert to sorted slice
-	var yearCounts []YearCount
-	for year := currentYear - 9; year <= currentYear; year++ {
-		severity := yearSeverityMap[year]
-		if severity == nil {
-			severity = make(map[string]int)
-		}
-		yearCounts = append(yearCounts, YearCount{
-			Year:     year,
-			Count:    yearCountMap[year],
-			Severity: severity,
-		})
-	}
-
-	response := FilterResponse{
-		CVEs:       pagedCVEs,
-		Total:      total,
-		Page:       req.Page,
-		PageSize:   req.PageSize,
-		TotalPages: totalPages,
-		YearCounts: yearCounts,
-		Options: FilterOptions{
-			Vendors:       app.vendors[:min(100, len(app.vendors))],
-			Products:      app.products[:min(100, len(app.products))],
-			Severities:    app.severities,
-			Years:         app.years,
-			CWEs:          app.cwes[:min(100, len(app.cwes))],
-			AttackVectors: []string{"NETWORK", "ADJACENT_NETWORK", "LOCAL", "PHYSICAL"},
-		},
-	}
-
-	return c.JSON(http.StatusOK, response)
-}
-
-// updateDisplayVendorProduct updates the display vendor/product to show the one that matched the filter
-func (app *App) updateDisplayVendorProduct(cve *CVE, req *FilterRequest) {
-	vendors := req.Vendors
-	if req.Vendor != "" && len(vendors) == 0 {
-		vendors = []string{req.Vendor}
-	}
-	products := req.Products
-	if req.Product != "" && len(products) == 0 {
-		products = []string{req.Product}
-	}
-
-	// If no vendor/product filter, keep the original
-	if len(vendors) == 0 && len(products) == 0 {
-		return
-	}
-
-	// Find the first affected product that matches the filter
-	for _, ap := range cve.AffectedProducts {
-		vendorMatch := len(vendors) == 0
-		productMatch := len(products) == 0
-
-		for _, v := range vendors {
-			if strings.EqualFold(ap.Vendor, v) {
-				vendorMatch = true
-				break
-			}
-		}
-		for _, p := range products {
-			if strings.EqualFold(ap.Product, p) {
-				productMatch = true
-				break
-			}
-		}
-
-		if vendorMatch && productMatch {
-			cve.Vendor = ap.Vendor
-			cve.Product = ap.Product
-			cve.Versions = ap.Versions
-			return
-		}
-	}
-}
-
-func (app *App) matchesFilter(cve *CVE, req *FilterRequest) bool {
-	// Year filter
-	if req.Year != nil && cve.Year != *req.Year {
-		return false
-	}
-	if req.YearFrom != nil && cve.Year < *req.YearFrom {
-		return false
-	}
-	if req.YearTo != nil && cve.Year > *req.YearTo {
-		return false
-	}
-
-	// Vendor filter - support both single and multiple vendors (exact match, case-insensitive)
-	vendors := req.Vendors
-	if req.Vendor != "" && len(vendors) == 0 {
-		vendors = []string{req.Vendor}
-	}
-	if len(vendors) > 0 {
-		vendorMatch := false
-		for _, vendor := range vendors {
-			for _, ap := range cve.AffectedProducts {
-				if strings.EqualFold(ap.Vendor, vendor) {
-					vendorMatch = true
-					break
-				}
-			}
-			if vendorMatch {
-				break
-			}
-			// Fallback to primary vendor if no affected products
-			if len(cve.AffectedProducts) == 0 {
-				if strings.EqualFold(cve.Vendor, vendor) {
-					vendorMatch = true
-					break
-				}
-			}
-		}
-		if !vendorMatch {
-			return false
-		}
-	}
-
-	// Product filter - support both single and multiple products (exact match, case-insensitive)
-	products := req.Products
-	if req.Product != "" && len(products) == 0 {
-		products = []string{req.Product}
-	}
-	if len(products) > 0 {
-		productMatch := false
-		for _, product := range products {
-			for _, ap := range cve.AffectedProducts {
-				if strings.EqualFold(ap.Product, product) {
-					productMatch = true
-					break
-				}
-			}
-			if productMatch {
-				break
-			}
-			// Fallback to primary product if no affected products
-			if len(cve.AffectedProducts) == 0 {
-				if strings.EqualFold(cve.Product, product) {
-					productMatch = true
-					break
-				}
-			}
-		}
-		if !productMatch {
-			return false
-		}
-	}
-
-	// Severity filter (exact match)
-	if req.Severity != "" && !strings.EqualFold(cve.BaseSeverity, req.Severity) {
-		return false
-	}
-
-	// CWE filter
-	if req.CWE != "" && !strings.Contains(strings.ToLower(cve.CWE), strings.ToLower(req.CWE)) {
-		return false
-	}
-
-	// Score range
-	if req.ScoreMin != nil && cve.BaseScore < *req.ScoreMin {
-		return false
-	}
-	if req.ScoreMax != nil && cve.BaseScore > *req.ScoreMax {
-		return false
-	}
-
-	// CISA KEV filter
-	if req.InKEV != nil && *req.InKEV != cve.InKEV {
-		return false
-	}
-
-	// Text search (in ID, description, title, vendor, product)
-	if req.Search != "" {
-		search := strings.ToLower(req.Search)
-		found := strings.Contains(strings.ToLower(cve.ID), search) ||
-			strings.Contains(strings.ToLower(cve.Description), search) ||
-			strings.Contains(strings.ToLower(cve.Title), search)
-
-		// Search across all affected products
-		if !found {
-			for _, ap := range cve.AffectedProducts {
-				if strings.Contains(strings.ToLower(ap.Vendor), search) ||
-					strings.Contains(strings.ToLower(ap.Product), search) {
-					found = true
-					break
-				}
-			}
-		}
-
-		// Fallback to primary vendor/product
-		if !found && len(cve.AffectedProducts) == 0 {
-			found = strings.Contains(strings.ToLower(cve.Vendor), search) ||
-				strings.Contains(strings.ToLower(cve.Product), search)
-		}
-
-		if !found {
-			return false
-		}
-	}
-
-	return true
-}
-
-func (app *App) sortCVEs(cves []CVE, sortBy string, desc bool) {
-	if sortBy == "" {
-		sortBy = "datePublished"
-		desc = true
-	}
-
-	sort.Slice(cves, func(i, j int) bool {
-		var less bool
-		switch sortBy {
-		case "id":
-			less = cves[i].ID < cves[j].ID
-		case "datePublished":
-			less = cves[i].DatePublished.Before(cves[j].DatePublished)
-		case "dateUpdated":
-			less = cves[i].DateUpdated.Before(cves[j].DateUpdated)
-		case "vendor":
-			less = cves[i].Vendor < cves[j].Vendor
-		case "product":
-			less = cves[i].Product < cves[j].Product
-		case "severity", "baseSeverity":
-			less = severityOrder(cves[i].BaseSeverity) < severityOrder(cves[j].BaseSeverity)
-		case "score":
-			less = cves[i].BaseScore < cves[j].BaseScore
-		default:
-			less = cves[i].DatePublished.Before(cves[j].DatePublished)
-		}
-		if desc {
-			return !less
-		}
-		return less
-	})
-}
-
-func severityOrder(s string) int {
-	switch strings.ToUpper(s) {
-	case "CRITICAL":
-		return 4
-	case "HIGH":
-		return 3
-	case "MEDIUM":
-		return 2
-	case "LOW":
-		return 1
-	default:
-		return 0
-	}
 }
 
 func (app *App) handleGetCVE(c echo.Context) error {
@@ -1562,7 +1274,8 @@ func (app *App) buildStatsCache() {
 	severityCounts := make(map[string]int)
 	var minYear, maxYear int = 9999, 0
 	var lastUpdated time.Time
-	kevCount := 0
+	kevCount, kevRansomware, kevRecent := 0, 0, 0
+	kevSince := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
 
 	for _, cve := range app.cves {
 		vendorCounts[cve.Vendor]++
@@ -1580,6 +1293,12 @@ func (app *App) buildStatsCache() {
 		}
 		if cve.InKEV {
 			kevCount++
+			if cve.KEVKnownRansomwareCampaign == "Known" {
+				kevRansomware++
+			}
+			if cve.KEVDateAdded >= kevSince {
+				kevRecent++
+			}
 		}
 	}
 
@@ -1613,6 +1332,9 @@ func (app *App) buildStatsCache() {
 		TopVendors:     topVendors,
 		SeverityCounts: severityCounts,
 		TotalKEV:       kevCount,
+		KEVRansomware:  kevRansomware,
+		KEVLast30Days:  kevRecent,
+		KEVCatalogDate: app.kevCatalogDate,
 	}
 }
 
@@ -1686,51 +1408,30 @@ func (app *App) handleSearchOptions(c echo.Context) error {
 	app.mu.RLock()
 	defer app.mu.RUnlock()
 
-	search := strings.ToLower(req.Search)
-	var results []string
+	search := strings.ToLower(strings.TrimSpace(req.Search))
 
-	// Combine single vendor with vendors array
 	vendors := req.Vendors
 	if req.Vendor != "" && len(vendors) == 0 {
 		vendors = []string{req.Vendor}
 	}
 
-	// Special handling for product field with vendor filter
+	// Products scoped to the selected vendors
 	if req.Field == "product" && len(vendors) > 0 {
 		productSet := make(map[string]bool)
-
-		// Find all products from CVEs that match any of the vendors
 		for _, cve := range app.cves {
 			for _, ap := range cve.AffectedProducts {
-				for _, vendor := range vendors {
-					vendorLower := strings.ToLower(vendor)
-					if strings.EqualFold(ap.Vendor, vendor) || strings.Contains(strings.ToLower(ap.Vendor), vendorLower) {
-						if ap.Product != "" {
-							productSet[ap.Product] = true
-						}
-						break
-					}
+				if !isPlaceholderName(ap.Product) && containsFold(vendors, ap.Vendor) {
+					productSet[ap.Product] = true
 				}
 			}
 		}
-
-		// Convert to sorted slice and filter by search
-		for product := range productSet {
-			if search == "" || strings.Contains(strings.ToLower(product), search) {
-				results = append(results, product)
-			}
+		scoped := make(map[string]int, len(productSet))
+		for p := range productSet {
+			scoped[p] = app.productCounts[p]
 		}
-		sort.Strings(results)
-
-		// Apply limit
-		if len(results) > req.Limit {
-			results = results[:req.Limit]
-		}
-
-		return c.JSON(http.StatusOK, results)
+		return c.JSON(http.StatusOK, rankMatches(keysByCount(scoped), search, req.Limit))
 	}
 
-	// Standard handling for vendor, cwe, or product without vendor filter
 	var source []string
 	switch req.Field {
 	case "vendor":
@@ -1743,16 +1444,7 @@ func (app *App) handleSearchOptions(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid field"})
 	}
 
-	for _, item := range source {
-		if search == "" || strings.Contains(strings.ToLower(item), search) {
-			results = append(results, item)
-			if len(results) >= req.Limit {
-				break
-			}
-		}
-	}
-
-	return c.JSON(http.StatusOK, results)
+	return c.JSON(http.StatusOK, rankMatches(source, search, req.Limit))
 }
 
 func (app *App) handleExportXLS(c echo.Context) error {
@@ -1761,29 +1453,17 @@ func (app *App) handleExportXLS(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 
-	// Remove pagination for export
-	req.Page = 1
-	req.PageSize = 100000 // Large limit for export
-
 	app.mu.RLock()
-
-	// Filter CVEs
-	var filtered []CVE
-	for _, cve := range app.cves {
-		if !app.matchesFilter(&cve, &req) {
-			continue
-		}
-		filtered = append(filtered, cve)
+	matches, _ := app.filterCVEs(&req, false)
+	// Limit export to 10000 rows
+	if len(matches) > 10000 {
+		matches = matches[:10000]
+	}
+	filtered := make([]CVE, len(matches))
+	for n, i := range matches {
+		filtered[n] = app.cves[i]
 	}
 	app.mu.RUnlock()
-
-	// Sort
-	app.sortCVEs(filtered, req.SortBy, req.SortDesc)
-
-	// Limit export to 10000 rows
-	if len(filtered) > 10000 {
-		filtered = filtered[:10000]
-	}
 
 	// Create Excel file
 	f := excelize.NewFile()
@@ -1814,7 +1494,11 @@ func (app *App) handleExportXLS(c echo.Context) error {
 		f.SetCellValue(sheetName, cellName(2, row), cve.Year)
 		f.SetCellValue(sheetName, cellName(3, row), cve.Vendor)
 		f.SetCellValue(sheetName, cellName(4, row), cve.Product)
-		f.SetCellValue(sheetName, cellName(5, row), cve.Title)
+		title := cve.Title
+		if title == "" {
+			title = cve.KEVVulnerabilityName
+		}
+		f.SetCellValue(sheetName, cellName(5, row), title)
 		f.SetCellValue(sheetName, cellName(6, row), cve.BaseSeverity)
 		f.SetCellValue(sheetName, cellName(7, row), cve.BaseScore)
 		f.SetCellValue(sheetName, cellName(8, row), cve.AttackVector)
@@ -1857,4 +1541,3 @@ func cellName(col, row int) string {
 	name, _ := excelize.CoordinatesToCellName(col, row)
 	return name
 }
-

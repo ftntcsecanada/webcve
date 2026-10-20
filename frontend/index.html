@@ -1,10 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8">
-    <link rel="icon" href="/favicon.ico">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>webcve</title>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Browse and filter the CVE corpus and the CISA Known Exploited Vulnerabilities catalog." />
+    <title>webcve · CVE &amp; KEV browser</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a light/dark flash
+      try {
+        var t = localStorage.getItem("webcve.theme");
+        if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>
