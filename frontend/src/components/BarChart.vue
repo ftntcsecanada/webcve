@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 
 // Generic stacked bar chart with hover tooltips and optional click/drag range selection.
 // bars: [{ key, label, tick, total, segments: [{ key, label, value, color }] }]
@@ -131,11 +131,51 @@ const hasSelection = computed(
   () => dragFrom.value != null || (props.selection && (props.selection[0] != null || props.selection[1] != null))
 );
 
-const tip = computed(() => {
-  const g = geometry.value[hover.value];
-  if (!g) return null;
-  const left = Math.min(Math.max(g.cx, 80), width.value - 80);
-  return { g, left };
+const tip = computed(() => geometry.value[hover.value] ?? null);
+
+// The tooltip is teleported to <body> with fixed positioning so the chart's scroll
+// container can't clip it. Prefer above the bar; if that would cross the top of the
+// visible area, sit beside the bar instead. Always clamp inside the visible area.
+const tipEl = ref(null);
+const tipStyle = ref({ visibility: "hidden" });
+
+function visibleBounds(el) {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(p).overflowY)) {
+      const r = p.getBoundingClientRect();
+      return { top: Math.max(r.top, 0), bottom: Math.min(r.bottom, innerHeight), left: 0, right: innerWidth };
+    }
+  }
+  return { top: 0, bottom: innerHeight, left: 0, right: innerWidth };
+}
+
+async function placeTip() {
+  // Runs before paint (microtasks), so measuring the rendered tooltip doesn't flicker
+  await nextTick();
+  const g = tip.value;
+  if (!g || !tipEl.value || !root.value) return;
+  const M = 8;
+  const rect = root.value.getBoundingClientRect();
+  const b = visibleBounds(root.value);
+  const { width: w, height: h } = tipEl.value.getBoundingClientRect();
+  const clampX = (x) => Math.min(Math.max(x, b.left + M), b.right - w - M);
+  const clampY = (y) => Math.min(Math.max(y, b.top + M), b.bottom - h - M);
+  const barTop = rect.top + y(g.bar.total);
+  let left, top;
+  if (barTop - h - 10 >= b.top + M) {
+    left = clampX(rect.left + g.cx - w / 2);
+    top = barTop - h - 10;
+  } else {
+    const right = rect.left + g.x + barW.value + 12;
+    left = right + w <= b.right - M ? right : rect.left + g.x - w - 12;
+    left = clampX(left);
+    top = clampY(rect.top + PAD.top + plotH.value / 2 - h / 2);
+  }
+  tipStyle.value = { left: `${left}px`, top: `${top}px` };
+}
+
+watch([hover, () => props.bars], () => {
+  if (hover.value >= 0) placeTip();
 });
 
 function fmt(n) {
@@ -185,18 +225,20 @@ function fmtTick(n) {
         </template>
       </g>
     </svg>
-    <div v-if="tip && dragFrom == null" class="tip" :style="{ left: tip.left + 'px' }">
-      <div class="tip-title">{{ tip.g.bar.label }}</div>
-      <div v-for="s in [...tip.g.bar.segments].reverse()" v-show="tip.g.bar.segments.length > 1" :key="s.key" class="tip-row">
+    <Teleport to="body">
+    <div v-if="tip && dragFrom == null" ref="tipEl" class="chart-tip" :style="tipStyle">
+      <div class="tip-title">{{ tip.bar.label }}</div>
+      <div v-for="s in [...tip.bar.segments].reverse()" v-show="tip.bar.segments.length > 1" :key="s.key" class="tip-row">
         <span class="swatch" :style="{ background: s.color }" />
         <span class="tip-label">{{ s.label }}</span>
         <span class="num">{{ fmt(s.value) }}</span>
       </div>
       <div class="tip-total">
-        <span>Total</span><span class="num">{{ fmt(tip.g.bar.total) }} {{ unit }}</span>
+        <span>Total</span><span class="num">{{ fmt(tip.bar.total) }} {{ unit }}</span>
       </div>
       <div v-if="selectable" class="tip-hint">Click or drag to filter · shift-click extends</div>
     </div>
+    </Teleport>
   </div>
 </template>
 
@@ -238,11 +280,9 @@ svg.selectable {
 .bar path {
   transition: d 0.3s ease;
 }
-.tip {
-  position: absolute;
-  bottom: calc(100% - 4px);
-  transform: translateX(-50%);
-  z-index: 20;
+.chart-tip {
+  position: fixed;
+  z-index: 60;
   min-width: 160px;
   padding: 8px 10px;
   border-radius: var(--radius);
