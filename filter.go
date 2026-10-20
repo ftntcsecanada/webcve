@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/json"
-	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/labstack/echo/v4"
 )
 
 // FilterRequest represents incoming filter parameters
@@ -22,36 +20,44 @@ type FilterRequest struct {
 	CWE           string   `json:"cwe"`
 	ScoreMin      *float64 `json:"scoreMin"`
 	ScoreMax      *float64 `json:"scoreMax"`
+	EPSSMin       *float64 `json:"epssMin"` // 0..1
+	PublicExploit bool     `json:"publicExploit"`
 	InKEV         *bool    `json:"inKEV"`
 	Ransomware    bool     `json:"ransomware"`   // Only KEV entries with known ransomware use
 	KEVAddedDays  int      `json:"kevAddedDays"` // Only KEV entries added within the last N days
+	KEVDue        string   `json:"kevDue"`       // "overdue", or N = due within the next N days
+	ChangedSince  string   `json:"changedSince"` // Published or added to KEV at/after this time (RFC 3339 or date)
 	SortBy        string   `json:"sortBy"`
 	SortDesc      bool     `json:"sortDesc"`
 	Page          int      `json:"page"`
 	PageSize      int      `json:"pageSize"`
+	CountOnly     bool     `json:"countOnly"`
 }
 
 // CVESummary is the slim row representation returned by list queries
 type CVESummary struct {
-	ID            string    `json:"id"`
-	Year          int       `json:"year"`
-	Vendor        string    `json:"vendor"`
-	Product       string    `json:"product"`
-	AffectedCount int       `json:"affectedCount"`
-	Title         string    `json:"title"`
-	Description   string    `json:"description"`
-	BaseScore     float64   `json:"baseScore"`
-	BaseSeverity  string    `json:"baseSeverity"`
-	CvssVersion   string    `json:"cvssVersion"`
-	AttackVector  string    `json:"attackVector"`
-	CWE           string    `json:"cwe"`
-	DatePublished time.Time `json:"datePublished"`
-	DateUpdated   time.Time `json:"dateUpdated"`
-	InKEV         bool      `json:"inKEV"`
-	KEVName       string    `json:"kevName,omitempty"`
-	KEVDateAdded  string    `json:"kevDateAdded,omitempty"`
-	KEVDueDate    string    `json:"kevDueDate,omitempty"`
-	KEVRansomware string    `json:"kevKnownRansomwareCampaign,omitempty"`
+	ID             string    `json:"id"`
+	Year           int       `json:"year"`
+	Vendor         string    `json:"vendor"`
+	Product        string    `json:"product"`
+	AffectedCount  int       `json:"affectedCount"`
+	Title          string    `json:"title"`
+	Description    string    `json:"description"`
+	BaseScore      float64   `json:"baseScore"`
+	BaseSeverity   string    `json:"baseSeverity"`
+	CvssVersion    string    `json:"cvssVersion"`
+	AttackVector   string    `json:"attackVector"`
+	CWE            string    `json:"cwe"`
+	DatePublished  time.Time `json:"datePublished"`
+	DateUpdated    time.Time `json:"dateUpdated"`
+	EPSS           float64   `json:"epss"`
+	EPSSPercentile float64   `json:"epssPercentile"`
+	PublicExploit  bool      `json:"publicExploit"`
+	InKEV          bool      `json:"inKEV"`
+	KEVName        string    `json:"kevName,omitempty"`
+	KEVDateAdded   string    `json:"kevDateAdded,omitempty"`
+	KEVDueDate     string    `json:"kevDueDate,omitempty"`
+	KEVRansomware  string    `json:"kevKnownRansomwareCampaign,omitempty"`
 }
 
 // FilterResponse contains filtered results and metadata
@@ -64,6 +70,7 @@ type FilterResponse struct {
 	Facets     Facets       `json:"facets"`
 	YearCounts []YearCount  `json:"yearCounts"`
 	KEVMonths  []MonthCount `json:"kevMonths"`
+	Terms      []string     `json:"terms,omitempty"` // Search terms that were ignored (stopwords)
 	TookMs     float64      `json:"tookMs"`
 }
 
@@ -74,6 +81,7 @@ type Facets struct {
 	AttackVector map[string]int `json:"attackVector"`
 	KEV          int            `json:"kev"`
 	Ransomware   int            `json:"ransomware"`
+	Exploit      int            `json:"exploit"`
 }
 
 // YearCount represents CVE count for a specific year with severity breakdown
@@ -89,16 +97,6 @@ type MonthCount struct {
 	Count int    `json:"count"`
 }
 
-// FilterOptions provides available filter values
-type FilterOptions struct {
-	Vendors       []string `json:"vendors"`
-	Products      []string `json:"products"`
-	Severities    []string `json:"severities"`
-	Years         []int    `json:"years"`
-	CWEs          []string `json:"cwes"`
-	AttackVectors []string `json:"attackVectors"`
-}
-
 // Filter groups, used as bits so a single pass can compute disjunctive facets
 const (
 	gYear = 1 << iota
@@ -108,26 +106,91 @@ const (
 	gAttackVector
 	gCWE
 	gScore
+	gEPSS
+	gExploit
 	gKEV
 	gSearch
+	gChanged
 )
 
 // compiledFilter holds a FilterRequest normalized for fast matching
 type compiledFilter struct {
-	req           *FilterRequest
-	vendors       []string
+	req           FilterRequest
+	vendors       []string // normalized keys, exact
 	products      []string
 	severities    map[string]bool
 	attackVectors map[string]bool
 	cwe           string
-	terms         []string
 	kevSince      string
+	dueFrom       string
+	dueTo         string
+	changedTime   time.Time
+	changedDate   string
+
+	// Free-text search: nil means no text filter; otherwise a membership bitset
+	searchSet []uint64
+	// From "vendor:" / "product:" search syntax: substring match on keys
+	textVendors  []string
+	textProducts []string
 }
 
-func compileFilter(req *FilterRequest) *compiledFilter {
-	f := &compiledFilter{req: req, cwe: strings.ToLower(strings.TrimSpace(req.CWE))}
-	f.vendors = req.Vendors
-	f.products = req.Products
+var fieldTermRe = regexp.MustCompile(`(?i)\b(vendor|product|cwe|sev|severity|kev|exploit|year|epss|av):("([^"]*)"|(\S+))`)
+
+// compileFilter normalizes req against ds, resolving search text to candidate docs
+func compileFilter(ds *Dataset, req FilterRequest) *compiledFilter {
+	f := &compiledFilter{}
+
+	// Pull field:value terms out of the search box into structured filters
+	search := fieldTermRe.ReplaceAllStringFunc(req.Search, func(m string) string {
+		sub := fieldTermRe.FindStringSubmatch(m)
+		field, val := strings.ToLower(sub[1]), sub[3]
+		if val == "" {
+			val = sub[4]
+		}
+		lv := strings.ToLower(val)
+		switch field {
+		case "vendor":
+			f.textVendors = append(f.textVendors, normalizeVendor(val))
+		case "product":
+			f.textProducts = append(f.textProducts, normalizeProduct(val))
+		case "cwe":
+			if _, err := strconv.Atoi(val); err == nil {
+				val = "CWE-" + val
+			}
+			req.CWE = val
+		case "sev", "severity":
+			req.Severities = append(req.Severities, strings.ToUpper(val))
+		case "av":
+			req.AttackVectors = append(req.AttackVectors, normalizeAttackVector(val))
+		case "kev":
+			b := lv == "yes" || lv == "true" || lv == "1"
+			req.InKEV = &b
+		case "exploit":
+			req.PublicExploit = lv == "yes" || lv == "true" || lv == "1"
+		case "year":
+			if y, err := strconv.Atoi(val); err == nil {
+				req.YearFrom, req.YearTo = &y, &y
+			}
+		case "epss":
+			if v, ok := parseEPSS(val); ok {
+				req.EPSSMin = &v
+			}
+		}
+		return " "
+	})
+
+	f.req = req
+	f.cwe = strings.ToLower(strings.TrimSpace(req.CWE))
+	for _, v := range req.Vendors {
+		if k := normalizeVendor(v); k != "" {
+			f.vendors = append(f.vendors, k)
+		}
+	}
+	for _, p := range req.Products {
+		if k := normalizeProduct(p); k != "" {
+			f.products = append(f.products, k)
+		}
+	}
 	if len(req.Severities) > 0 {
 		f.severities = make(map[string]bool)
 		for _, s := range req.Severities {
@@ -137,21 +200,123 @@ func compileFilter(req *FilterRequest) *compiledFilter {
 	if len(req.AttackVectors) > 0 {
 		f.attackVectors = make(map[string]bool)
 		for _, a := range req.AttackVectors {
-			f.attackVectors[strings.ToUpper(a)] = true
+			f.attackVectors[normalizeAttackVector(a)] = true
 		}
 	}
-	f.terms = strings.Fields(strings.ToLower(req.Search))
 	if req.KEVAddedDays > 0 {
 		f.kevSince = time.Now().AddDate(0, 0, -req.KEVAddedDays).Format("2006-01-02")
 	}
+	today := time.Now().Format("2006-01-02")
+	switch req.KEVDue {
+	case "":
+	case "overdue":
+		f.dueTo = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	default:
+		if n, err := strconv.Atoi(req.KEVDue); err == nil && n > 0 {
+			f.dueFrom = today
+			f.dueTo = time.Now().AddDate(0, 0, n).Format("2006-01-02")
+		}
+	}
+	if req.ChangedSince != "" {
+		if t, err := time.Parse(time.RFC3339, req.ChangedSince); err == nil {
+			f.changedTime = t
+		} else if t, err := time.Parse("2006-01-02", req.ChangedSince); err == nil {
+			f.changedTime = t
+		}
+		if !f.changedTime.IsZero() {
+			f.changedDate = f.changedTime.UTC().Format("2006-01-02")
+		}
+	}
+
+	f.compileSearch(ds, search)
 	return f
+}
+
+func parseEPSS(s string) (float64, bool) {
+	s = strings.TrimLeft(s, ">=")
+	pct := strings.HasSuffix(s, "%")
+	v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+	if err != nil {
+		return 0, false
+	}
+	if pct || v > 1 {
+		v /= 100
+	}
+	return v, true
+}
+
+// splitSearchTerms splits on whitespace, keeping "quoted phrases" together
+func splitSearchTerms(s string) (terms []string, phrases []bool) {
+	for {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if s[0] == '"' {
+			end := strings.IndexByte(s[1:], '"')
+			if end < 0 {
+				end = len(s) - 1
+			}
+			if p := strings.TrimSpace(s[1 : end+1]); p != "" {
+				terms = append(terms, p)
+				phrases = append(phrases, true)
+			}
+			s = s[min(end+2, len(s)):]
+			continue
+		}
+		end := strings.IndexAny(s, " \t\n")
+		if end < 0 {
+			end = len(s)
+		}
+		terms = append(terms, s[:end])
+		phrases = append(phrases, false)
+		s = s[end:]
+	}
+}
+
+func (f *compiledFilter) compileSearch(ds *Dataset, search string) {
+	terms, phrases := splitSearchTerms(search)
+	var docs []uint32
+	have := false
+	for n, term := range terms {
+		d, ok := ds.search.queryTerm(term)
+		if !ok {
+			continue // only stopwords/punctuation
+		}
+		// Multi-token terms and phrases are verified against the text, since
+		// the index only knows that the tokens occur somewhere in the record
+		var multi int
+		tokenize(term, func(string) { multi++ })
+		if phrases[n] || multi > 1 {
+			phrase := strings.ToLower(term)
+			kept := d[:0:0]
+			for _, doc := range d {
+				if containsFoldText(&ds.CVEs[doc], phrase) {
+					kept = append(kept, doc)
+				}
+			}
+			d = kept
+		}
+		if !have {
+			docs, have = d, true
+		} else {
+			docs = intersectPostings(docs, d)
+		}
+	}
+	if !have {
+		return
+	}
+	f.searchSet = make([]uint64, (len(ds.CVEs)+63)/64)
+	for _, d := range docs {
+		f.searchSet[d>>6] |= 1 << (d & 63)
+	}
 }
 
 func severityKey(s string) string {
 	if s == "" {
 		return "NONE"
 	}
-	return s
+	return strings.ToUpper(s)
 }
 
 // normalizeAttackVector maps CVSS 2/3/4 spellings to a single set of values
@@ -169,19 +334,44 @@ func normalizeAttackVector(av string) string {
 	return ""
 }
 
-// failedGroups returns a bitmask of the filter groups that this CVE fails
-func (app *App) failedGroups(i int, f *compiledFilter) int {
-	cve := &app.cves[i]
-	req := f.req
+func anyKeyIn(keys, wanted []string) bool {
+	for _, k := range keys {
+		if slices.Contains(wanted, k) {
+			return true
+		}
+	}
+	return false
+}
+
+func anyKeyContains(keys, wanted []string) bool {
+	for _, w := range wanted {
+		found := false
+		for _, k := range keys {
+			if strings.Contains(k, w) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// failedGroups returns a bitmask of the filter groups that CVE i fails
+func (ds *Dataset) failedGroups(i int, f *compiledFilter) int {
+	cve := &ds.CVEs[i]
+	req := &f.req
 	failed := 0
 
 	if (req.YearFrom != nil && cve.Year < *req.YearFrom) || (req.YearTo != nil && cve.Year > *req.YearTo) {
 		failed |= gYear
 	}
-	if len(f.vendors) > 0 && !matchesAffected(cve, f.vendors, func(ap AffectedProduct) string { return ap.Vendor }, cve.Vendor) {
+	if len(f.vendors) > 0 && !anyKeyIn(ds.vendorKeys[i], f.vendors) {
 		failed |= gVendor
 	}
-	if len(f.products) > 0 && !matchesAffected(cve, f.products, func(ap AffectedProduct) string { return ap.Product }, cve.Product) {
+	if len(f.products) > 0 && !anyKeyIn(ds.productKeys[i], f.products) {
 		failed |= gProduct
 	}
 	if f.severities != nil && !f.severities[severityKey(cve.BaseSeverity)] {
@@ -196,79 +386,32 @@ func (app *App) failedGroups(i int, f *compiledFilter) int {
 	if (req.ScoreMin != nil && cve.BaseScore < *req.ScoreMin) || (req.ScoreMax != nil && cve.BaseScore > *req.ScoreMax) {
 		failed |= gScore
 	}
+	if req.EPSSMin != nil && cve.EPSS < *req.EPSSMin {
+		failed |= gEPSS
+	}
+	if req.PublicExploit && !cve.PublicExploit {
+		failed |= gExploit
+	}
 	if (req.InKEV != nil && *req.InKEV != cve.InKEV) ||
 		(req.Ransomware && cve.KEVKnownRansomwareCampaign != "Known") ||
-		(f.kevSince != "" && (!cve.InKEV || cve.KEVDateAdded < f.kevSince)) {
+		(f.kevSince != "" && (!cve.InKEV || cve.KEVDateAdded < f.kevSince)) ||
+		(f.dueTo != "" && (!cve.InKEV || cve.KEVDueDate == "" || cve.KEVDueDate > f.dueTo || cve.KEVDueDate < f.dueFrom)) {
 		failed |= gKEV
 	}
-	if len(f.terms) > 0 {
-		text := app.searchText[i]
-		for _, t := range f.terms {
-			if !strings.Contains(text, t) {
-				failed |= gSearch
-				break
-			}
-		}
+	if (f.searchSet != nil && f.searchSet[i>>6]&(1<<(uint(i)&63)) == 0) ||
+		(len(f.textVendors) > 0 && !anyKeyContains(ds.vendorKeys[i], f.textVendors)) ||
+		(len(f.textProducts) > 0 && !anyKeyContains(ds.productKeys[i], f.textProducts)) {
+		failed |= gSearch
+	}
+	if !f.changedTime.IsZero() && cve.DatePublished.Before(f.changedTime) && (!cve.InKEV || cve.KEVDateAdded < f.changedDate) {
+		failed |= gChanged
 	}
 	return failed
 }
 
-func matchesAffected(cve *CVE, wanted []string, field func(AffectedProduct) string, primary string) bool {
-	if len(cve.AffectedProducts) == 0 {
-		for _, w := range wanted {
-			if strings.EqualFold(primary, w) {
-				return true
-			}
-		}
-		return false
-	}
-	for _, ap := range cve.AffectedProducts {
-		v := field(ap)
-		for _, w := range wanted {
-			if strings.EqualFold(v, w) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// buildSearchIndex precomputes a lowercase haystack per CVE so text search
-// doesn't have to lowercase every description on every request.
-func (app *App) buildSearchIndex() {
-	app.searchText = make([]string, len(app.cves))
-	var b strings.Builder
-	for i := range app.cves {
-		cve := &app.cves[i]
-		b.Reset()
-		b.WriteString(cve.ID)
-		b.WriteByte('\n')
-		b.WriteString(cve.Title)
-		b.WriteByte('\n')
-		b.WriteString(cve.Description)
-		b.WriteByte('\n')
-		b.WriteString(cve.CWE)
-		b.WriteByte('\n')
-		b.WriteString(cve.KEVVulnerabilityName)
-		if len(cve.AffectedProducts) == 0 {
-			b.WriteByte('\n')
-			b.WriteString(cve.Vendor)
-			b.WriteByte(' ')
-			b.WriteString(cve.Product)
-		}
-		for _, ap := range cve.AffectedProducts {
-			b.WriteByte('\n')
-			b.WriteString(ap.Vendor)
-			b.WriteByte(' ')
-			b.WriteString(ap.Product)
-		}
-		app.searchText[i] = strings.ToLower(b.String())
-	}
-}
-
-// filterCVEs returns the indexes of matching CVEs and, optionally, disjunctive facets
-func (app *App) filterCVEs(req *FilterRequest, withFacets bool) ([]int, *FilterResponse) {
-	f := compileFilter(req)
+// filterCVEs returns the sorted indexes of matching CVEs and, optionally, facets
+func (ds *Dataset) filterCVEs(f *compiledFilter, withFacets bool) ([]int, *FilterResponse) {
+	req := &f.req
 	matches := make([]int, 0, 1024)
 
 	resp := &FilterResponse{
@@ -278,20 +421,21 @@ func (app *App) filterCVEs(req *FilterRequest, withFacets bool) ([]int, *FilterR
 	kevMonths := map[string]int{}
 
 	// Walk CVEs in pre-sorted order so matches come out already sorted
-	order := app.sortedOrder(req.SortBy)
+	order := ds.sortedOrder(req.SortBy)
+	desc := req.SortDesc || req.SortBy == ""
 	for n := range order {
 		i := order[n]
-		if req.SortDesc || req.SortBy == "" {
+		if desc {
 			i = order[len(order)-1-n]
 		}
-		failed := app.failedGroups(i, f)
+		failed := ds.failedGroups(i, f)
 		if failed == 0 {
 			matches = append(matches, i)
 		}
 		if !withFacets {
 			continue
 		}
-		cve := &app.cves[i]
+		cve := &ds.CVEs[i]
 		if failed&^gSeverity == 0 {
 			resp.Facets.Severity[severityKey(cve.BaseSeverity)]++
 		}
@@ -305,6 +449,9 @@ func (app *App) filterCVEs(req *FilterRequest, withFacets bool) ([]int, *FilterR
 			if cve.KEVKnownRansomwareCampaign == "Known" {
 				resp.Facets.Ransomware++
 			}
+		}
+		if failed&^gExploit == 0 && cve.PublicExploit {
+			resp.Facets.Exploit++
 		}
 		if failed&^gYear == 0 && cve.Year > 0 {
 			yc := years[cve.Year]
@@ -327,9 +474,7 @@ func (app *App) filterCVEs(req *FilterRequest, withFacets bool) ([]int, *FilterR
 			if minYear == 0 || y < minYear {
 				minYear = y
 			}
-			if y > maxYear {
-				maxYear = y
-			}
+			maxYear = max(maxYear, y)
 		}
 		for y := minYear; y <= maxYear && minYear > 0; y++ {
 			if yc := years[y]; yc != nil {
@@ -339,12 +484,13 @@ func (app *App) filterCVEs(req *FilterRequest, withFacets bool) ([]int, *FilterR
 			}
 		}
 		// 24 months of KEV additions, ending at the catalog release month
-		now, err := time.Parse("2006-01-02", app.kevCatalogDate[:min(10, len(app.kevCatalogDate))])
+		end, err := time.Parse("2006-01-02", ds.kevCatalogDate[:min(10, len(ds.kevCatalogDate))])
 		if err != nil {
-			now = time.Now()
+			end = time.Now()
 		}
+		end = time.Date(end.Year(), end.Month(), 1, 0, 0, 0, 0, time.UTC)
 		for m := 23; m >= 0; m-- {
-			key := now.AddDate(0, -m, 0).Format("2006-01")
+			key := end.AddDate(0, -m, 0).Format("2006-01")
 			resp.KEVMonths = append(resp.KEVMonths, MonthCount{Month: key, Count: kevMonths[key]})
 		}
 	}
@@ -352,53 +498,17 @@ func (app *App) filterCVEs(req *FilterRequest, withFacets bool) ([]int, *FilterR
 	return matches, resp
 }
 
-func (app *App) handleFilterCVEs(c echo.Context) error {
-	start := time.Now()
-	var req FilterRequest
-	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
-	}
-
-	if req.PageSize <= 0 {
-		req.PageSize = 50
-	}
-	if req.PageSize > 500 {
-		req.PageSize = 500
-	}
-	if req.Page < 1 {
-		req.Page = 1
-	}
-
-	app.mu.RLock()
-	defer app.mu.RUnlock()
-
-	matches, resp := app.filterCVEs(&req, true)
-
-	total := len(matches)
-	from := min((req.Page-1)*req.PageSize, total)
-	to := min(from+req.PageSize, total)
-
-	resp.CVEs = make([]CVESummary, 0, to-from)
-	for _, i := range matches[from:to] {
-		resp.CVEs = append(resp.CVEs, summarize(&app.cves[i], &req))
-	}
-	resp.Total = total
-	resp.Page = req.Page
-	resp.PageSize = req.PageSize
-	resp.TotalPages = (total + req.PageSize - 1) / req.PageSize
-	resp.TookMs = float64(time.Since(start).Microseconds()) / 1000
-
-	return c.JSON(http.StatusOK, resp)
-}
-
 // summarize builds a list row, showing the affected product that matched the
 // vendor/product filter rather than always the first one
-func summarize(cve *CVE, req *FilterRequest) CVESummary {
+func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
+	cve := &ds.CVEs[i]
 	vendor, product := cve.Vendor, cve.Product
-	if len(req.Vendors) > 0 || len(req.Products) > 0 {
+	if f != nil && (len(f.vendors) > 0 || len(f.products) > 0 || len(f.textVendors) > 0) {
 		for _, ap := range cve.AffectedProducts {
-			if (len(req.Vendors) == 0 || containsFold(req.Vendors, ap.Vendor)) &&
-				(len(req.Products) == 0 || containsFold(req.Products, ap.Product)) {
+			vk, pk := normalizeVendor(ap.Vendor), normalizeProduct(ap.Product)
+			if (len(f.vendors) == 0 || slices.Contains(f.vendors, vk)) &&
+				(len(f.products) == 0 || slices.Contains(f.products, pk)) &&
+				anyKeyContains([]string{vk}, f.textVendors) {
 				vendor, product = ap.Vendor, ap.Product
 				break
 			}
@@ -411,63 +521,33 @@ func summarize(cve *CVE, req *FilterRequest) CVESummary {
 	}
 
 	return CVESummary{
-		ID:            cve.ID,
-		Year:          cve.Year,
-		Vendor:        vendor,
-		Product:       product,
-		AffectedCount: len(cve.AffectedProducts),
-		Title:         cve.Title,
-		Description:   desc,
-		BaseScore:     cve.BaseScore,
-		BaseSeverity:  cve.BaseSeverity,
-		CvssVersion:   cve.CvssVersion,
-		AttackVector:  normalizeAttackVector(cve.AttackVector),
-		CWE:           cve.CWE,
-		DatePublished: cve.DatePublished,
-		DateUpdated:   cve.DateUpdated,
-		InKEV:         cve.InKEV,
-		KEVName:       cve.KEVVulnerabilityName,
-		KEVDateAdded:  cve.KEVDateAdded,
-		KEVDueDate:    cve.KEVDueDate,
-		KEVRansomware: cve.KEVKnownRansomwareCampaign,
+		ID:             cve.ID,
+		Year:           cve.Year,
+		Vendor:         vendor,
+		Product:        product,
+		AffectedCount:  len(cve.AffectedProducts),
+		Title:          cve.Title,
+		Description:    desc,
+		BaseScore:      cve.BaseScore,
+		BaseSeverity:   cve.BaseSeverity,
+		CvssVersion:    cve.CvssVersion,
+		AttackVector:   normalizeAttackVector(cve.AttackVector),
+		CWE:            cve.CWE,
+		DatePublished:  cve.DatePublished,
+		DateUpdated:    cve.DateUpdated,
+		EPSS:           cve.EPSS,
+		EPSSPercentile: cve.EPSSPercentile,
+		PublicExploit:  cve.PublicExploit,
+		InKEV:          cve.InKEV,
+		KEVName:        cve.KEVVulnerabilityName,
+		KEVDateAdded:   cve.KEVDateAdded,
+		KEVDueDate:     cve.KEVDueDate,
+		KEVRansomware:  cve.KEVKnownRansomwareCampaign,
 	}
-}
-
-func containsFold(list []string, v string) bool {
-	for _, s := range list {
-		if strings.EqualFold(s, v) {
-			return true
-		}
-	}
-	return false
-}
-
-// sortedOrder returns CVE indexes in ascending order for sortBy, built lazily
-// and cached until the next buildIndexes
-func (app *App) sortedOrder(sortBy string) []int {
-	if sortBy == "" {
-		sortBy = "datePublished"
-	}
-	app.orderMu.Lock()
-	defer app.orderMu.Unlock()
-	if order, ok := app.orders[sortBy]; ok {
-		return order
-	}
-	order := make([]int, len(app.cves))
-	for i := range order {
-		order[i] = i
-	}
-	app.sortIndexes(order, sortBy)
-	if app.orders == nil {
-		app.orders = map[string][]int{}
-	}
-	app.orders[sortBy] = order
-	return order
 }
 
 // sortIndexes sorts CVE indexes ascending by the given field, with CVE ID as tiebreaker
-func (app *App) sortIndexes(idx []int, sortBy string) {
-	cves := app.cves
+func sortIndexes(cves []CVE, idx []int, sortBy string) {
 	cmp := func(a, b *CVE) int {
 		switch sortBy {
 		case "id":
@@ -487,6 +567,8 @@ func (app *App) sortIndexes(idx []int, sortBy string) {
 			return compareFloat(a.BaseScore, b.BaseScore)
 		case "score", "baseScore":
 			return compareFloat(a.BaseScore, b.BaseScore)
+		case "epss":
+			return compareFloat(a.EPSS, b.EPSS)
 		case "kevDateAdded":
 			return strings.Compare(a.KEVDateAdded, b.KEVDateAdded)
 		case "kevDueDate":
