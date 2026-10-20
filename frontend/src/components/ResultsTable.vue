@@ -2,7 +2,19 @@
 import { computed, watch, nextTick } from "vue";
 import Icon from "./Icon.vue";
 import { state, results, addUnique } from "../lib/store.js";
-import { SEVERITY_LABEL, severityKey, fmtDate, fmtRelative, daysFromToday, cleanName, summaryText, fmtEpss, epssLevel } from "../lib/format.js";
+import {
+  SEVERITY_LABEL,
+  severityKey,
+  fmtDate,
+  fmtRelative,
+  daysFromToday,
+  cleanName,
+  summaryText,
+  fmtEpss,
+  epssLevel,
+  EXPLOIT_SOURCE_LABEL,
+} from "../lib/format.js";
+import { explain } from "../lib/glossary.js";
 
 const props = defineProps({ cursor: { type: Number, default: -1 } });
 const emit = defineEmits(["open", "update:cursor"]);
@@ -23,6 +35,17 @@ function dueStatus(cve) {
 function epssTitle(cve) {
   if (!cve.epss) return "No EPSS score";
   return `EPSS: ${fmtEpss(cve.epss)} chance of exploitation in the next 30 days · ${Math.round(cve.epssPercentile * 100)}th percentile`;
+}
+
+function exploitTitle(cve) {
+  const names = (cve.exploitSources || []).map((k) => EXPLOIT_SOURCE_LABEL[k] || k);
+  return `Exploit evidence: ${names.join(", ")}. Open for details.`;
+}
+
+function scoreTitle(cve) {
+  if (!cve.baseScore) return explain("Unscored");
+  const src = cve.scoreSource === "nvd" ? " from NVD (the CVE record has no score)" : "";
+  return `${SEVERITY_LABEL[severityKey(cve.baseSeverity)]} · CVSS ${cve.cvssVersion}${src}`;
 }
 
 function sortBy(key) {
@@ -57,19 +80,19 @@ watch(
       <thead>
         <tr>
           <th class="c-score">
-            <button :class="{ sorted: state.sort.by === 'baseScore' }" @click="sortBy('baseScore')">
+            <button v-tip="explain('CVSS')" :class="{ sorted: state.sort.by === 'baseScore' }" @click="sortBy('baseScore')">
               CVSS
               <Icon v-if="state.sort.by === 'baseScore'" :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
             </button>
           </th>
           <th class="c-epss">
-            <button :class="{ sorted: state.sort.by === 'epss' }" title="Exploit Prediction Scoring System: probability of exploitation in the next 30 days" @click="sortBy('epss')">
+            <button v-tip="explain('EPSS')" :class="{ sorted: state.sort.by === 'epss' }" @click="sortBy('epss')">
               EPSS
               <Icon v-if="state.sort.by === 'epss'" :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
             </button>
           </th>
           <th class="c-id">
-            <button :class="{ sorted: state.sort.by === 'id' }" @click="sortBy('id')">
+            <button v-tip="explain('CVE')" :class="{ sorted: state.sort.by === 'id' }" @click="sortBy('id')">
               CVE
               <Icon v-if="state.sort.by === 'id'" :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
             </button>
@@ -88,7 +111,7 @@ watch(
               </button>
             </th>
             <th class="c-due">
-              <button :class="{ sorted: state.sort.by === 'kevDueDate' }" @click="sortBy('kevDueDate')">
+              <button v-tip="explain('Due date')" :class="{ sorted: state.sort.by === 'kevDueDate' }" @click="sortBy('kevDueDate')">
                 Due
                 <Icon v-if="state.sort.by === 'kevDueDate'" :name="state.sort.desc ? 'arrowDown' : 'arrowUp'" :size="12" />
               </button>
@@ -114,24 +137,29 @@ watch(
             <span
               class="sev-pill"
               :class="severityKey(cve.baseSeverity)"
-              :title="cve.baseScore ? `${SEVERITY_LABEL[severityKey(cve.baseSeverity)]} · CVSS ${cve.cvssVersion}` : 'No CVSS score'"
+              v-tip="scoreTitle(cve)"
             >
               {{ cve.baseScore ? cve.baseScore.toFixed(1) : "—" }}
             </span>
-            <span class="sev-text">{{ SEVERITY_LABEL[severityKey(cve.baseSeverity)] }}</span>
+            <span class="sev-text">
+              {{ SEVERITY_LABEL[severityKey(cve.baseSeverity)] }}<span v-if="cve.scoreSource === 'nvd'" class="nvd-mark"> · NVD</span>
+            </span>
           </td>
-          <td class="c-epss num" :title="epssTitle(cve)">
+          <td v-tip="epssTitle(cve)" class="c-epss num">
             <span class="epss" :class="epssLevel(cve.epss)">{{ fmtEpss(cve.epss) }}</span>
             <span v-if="cve.epss" class="epss-bar"><span :style="{ width: cve.epssPercentile * 100 + '%' }" :class="epssLevel(cve.epss)" /></span>
           </td>
           <td class="c-id">
             <a class="id mono" :href="`?cve=${cve.id}`" @click.prevent>{{ cve.id }}</a>
             <div class="id-badges">
-              <span v-if="cve.inKEV && !isKev" class="badge kev" title="In CISA Known Exploited Vulnerabilities catalog">KEV</span>
-              <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" class="badge danger" title="Known use in ransomware campaigns">
+              <span v-if="cve.inKEV && !isKev" v-tip="explain('KEV')" class="badge kev">KEV</span>
+              <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" v-tip="explain('Ransomware')" class="badge danger">
                 <Icon name="lock" :size="11" />Ransomware
               </span>
-              <span v-if="cve.publicExploit && !cve.inKEV" class="badge warn" title="Public exploit, proof of concept, or active exploitation reported">
+              <span v-if="cve.exploitSources?.includes('metasploit')" v-tip="exploitTitle(cve)" class="badge danger">
+                <Icon name="bug" :size="11" />Metasploit
+              </span>
+              <span v-else-if="cve.publicExploit && !cve.inKEV" v-tip="exploitTitle(cve)" class="badge warn">
                 <Icon name="bug" :size="11" />Exploit
               </span>
             </div>
@@ -308,6 +336,9 @@ th.c-date button,
 th.c-due button {
   margin-left: 0;
   margin-right: -6px;
+}
+.nvd-mark {
+  color: var(--text-3);
 }
 .sev-text {
   display: block;

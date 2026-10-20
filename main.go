@@ -49,10 +49,12 @@ func main() {
 
 	api := e.Group("/api")
 	api.GET("/health", app.handleHealth)
+	api.GET("/sources", app.handleSources)
 	data := api.Group("", app.requireData)
 	data.POST("/cves", app.handleFilterCVEs)
 	data.GET("/cves/:id", app.handleGetCVE)
 	data.GET("/cves/:id/related", app.handleRelated)
+	data.GET("/cves/:id/epss-history", app.handleEPSSHistory)
 	data.GET("/stats", app.handleGetStats)
 	data.POST("/options/search", app.handleSearchOptions)
 	data.POST("/export", app.handleExport)

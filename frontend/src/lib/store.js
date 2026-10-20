@@ -17,6 +17,7 @@ export function emptyFilters() {
     scoreMax: null,
     epssMin: null,
     exploit: false,
+    exploitSources: [],
     vendors: [],
     products: [],
     cwe: "",
@@ -65,7 +66,7 @@ export const results = reactive({
   cves: [],
   total: 0,
   totalPages: 0,
-  facets: { severity: {}, attackVector: {}, kev: 0, ransomware: 0, exploit: 0 },
+  facets: { severity: {}, attackVector: {}, kev: 0, ransomware: 0, exploit: 0, exploitSources: {} },
   yearCounts: [],
   kevMonths: [],
   tookMs: 0,
@@ -78,7 +79,7 @@ export function activeFilterCount() {
   const f = state.filters;
   let n = 0;
   if (f.q) n++;
-  n += f.severities.length + f.attackVectors.length + f.vendors.length + f.products.length;
+  n += f.severities.length + f.attackVectors.length + f.vendors.length + f.products.length + f.exploitSources.length;
   if (f.kevOnly && state.view !== "kev") n++;
   for (const k of ["ransomware", "kevDays", "kevDue", "cwe", "exploit", "since"]) if (f[k]) n++;
   if (f.yearFrom || f.yearTo) n++;
@@ -128,6 +129,7 @@ function buildRequest(view, f) {
   if (f.scoreMax != null) req.scoreMax = f.scoreMax;
   if (f.epssMin != null) req.epssMin = f.epssMin;
   if (f.exploit) req.publicExploit = true;
+  if (f.exploitSources.length) req.exploitSources = f.exploitSources;
   if (view === "kev" || f.kevOnly) req.inKEV = true;
   if (view === "kev" && f.ransomware) req.ransomware = true;
   if (view === "kev" && f.kevDays) req.kevAddedDays = f.kevDays;
@@ -269,6 +271,7 @@ function toQuery(view, f, sort, extra = {}) {
   if (f.scoreMax != null) p.set("smax", f.scoreMax);
   if (f.epssMin != null) p.set("epss", f.epssMin);
   if (f.exploit) p.set("x", "1");
+  f.exploitSources.forEach((v) => p.append("xs", v));
   if (f.since) p.set("since", f.since);
   if (sort) {
     const def = VIEWS[view].defaultSort;
@@ -302,6 +305,7 @@ export function fromQuery(qs) {
   f.scoreMax = num("smax");
   f.epssMin = num("epss");
   f.exploit = p.get("x") === "1";
+  f.exploitSources = p.getAll("xs");
   f.since = p.get("since") || "";
   const sort = p.has("sort") ? { by: p.get("sort"), desc: p.get("dir") !== "asc" } : { ...VIEWS[view].defaultSort };
   return { view, filters: f, sort, page: num("page") || 1, cve: p.get("cve") };

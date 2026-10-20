@@ -211,10 +211,43 @@ export function fmtPercentile(p) {
 export const EVIDENCE_LABEL = {
   "ssvc-active": "CISA: actively exploited",
   "ssvc-poc": "CISA: proof of concept public",
+  "euvd-exploited": "ENISA: exploited",
+  "msrc-exploited": "Microsoft: exploited",
+  metasploit: "Metasploit module",
+  exploitdb: "Exploit-DB",
+  nuclei: "Nuclei template",
+  github: "GitHub PoC",
   tagged: "Exploit reference",
   "exploit-site": "Exploit archive",
   "github-poc": "Possible GitHub PoC",
 };
+
+// Glossary term explaining each evidence kind
+export const EVIDENCE_TERM = {
+  "ssvc-active": "SSVC",
+  "ssvc-poc": "SSVC",
+  "euvd-exploited": "EUVD",
+  "msrc-exploited": "MSRC",
+  metasploit: "Metasploit",
+  exploitdb: "Exploit-DB",
+  nuclei: "Nuclei",
+  github: "GitHub PoC",
+  "github-poc": "GitHub PoC",
+};
+
+// Exploit-evidence source filter values, strongest weaponization first
+export const EXPLOIT_SOURCES = [
+  ["metasploit", "Metasploit module", "Metasploit"],
+  ["exploitdb", "Exploit-DB entry", "Exploit-DB"],
+  ["nuclei", "Nuclei template", "Nuclei"],
+  ["github", "GitHub PoC", "GitHub PoC"],
+  ["cisa", "CISA: PoC or exploited", "SSVC"],
+  ["euvd", "ENISA: exploited", "EUVD"],
+  ["msrc", "Microsoft: exploited", "MSRC"],
+  ["other", "Other exploit link", ""],
+];
+
+export const EXPLOIT_SOURCE_LABEL = Object.fromEntries(EXPLOIT_SOURCES.map(([k, label]) => [k, label]));
 
 export const SSVC_LABEL = {
   exploitation: { none: "No known exploitation", poc: "Proof of concept public", active: "Actively exploited" },

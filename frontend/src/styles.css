@@ -328,3 +328,26 @@ button {
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
+
+/* Shared tooltip for v-tip / <Term> */
+.v-tip {
+  position: fixed;
+  z-index: 100;
+  max-width: 300px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.1s;
+  box-shadow: var(--shadow-lg);
+}
+.v-tip.on {
+  opacity: 1;
+}

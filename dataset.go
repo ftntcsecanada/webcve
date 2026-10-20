@@ -2,6 +2,7 @@ package main
 
 import (
 	"math/bits"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -47,6 +48,17 @@ type Enrichment struct {
 	KEVCatalogDate string
 	EPSS           map[string]EPSSScore
 	EPSSDate       string
+
+	ExploitDB       map[string][]ExploitRef
+	Metasploit      map[string][]ExploitRef
+	Nuclei          map[string][]ExploitRef
+	GitHubPoCs      map[string][]ExploitRef
+	GitHubPoCTotals map[string]int
+	NVD             map[string]*NVDInfo
+	OSV             map[string][]PackageFix
+	EUVD            map[string]euvdEntry
+	MSRC            map[string]*MSRCInfo
+	CWENames        map[string]string
 }
 
 // buildDataset enriches cves (which it takes ownership of) and builds all indexes
@@ -129,7 +141,64 @@ func applyEnrichment(cve *CVE, enr *Enrichment) {
 		cve.EPSS = float64(e.Score)
 		cve.EPSSPercentile = float64(e.Percentile)
 	}
-	cve.PublicExploit = hasPublicExploit(cve)
+
+	// Exploit code and scanner templates, strongest sources first
+	cve.Exploits = nil
+	for _, m := range []map[string][]ExploitRef{enr.Metasploit, enr.ExploitDB, enr.Nuclei, enr.GitHubPoCs} {
+		cve.Exploits = append(cve.Exploits, m[cve.ID]...)
+	}
+	cve.GitHubPoCs = enr.GitHubPoCTotals[cve.ID]
+
+	applyNVD(cve, enr.NVD[cve.ID])
+	cve.Packages = enr.OSV[cve.ID]
+
+	cve.EUVDID, cve.EUVDExploitedSince = "", ""
+	if e, ok := enr.EUVD[cve.ID]; ok {
+		cve.EUVDID, cve.EUVDExploitedSince = e.EUVD, e.Since
+	}
+	cve.MSRC = enr.MSRC[cve.ID]
+
+	cve.CWEName = enr.CWENames[cve.CWE]
+	setExploitEvidence(cve)
+}
+
+// applyNVD fills the score from NVD when the CVE record has none, and records
+// NVD's CPE products and analysis status. Earlier NVD-derived scores are
+// cleared first so a rebuild reflects the current NVD data.
+func applyNVD(cve *CVE, n *NVDInfo) {
+	if cve.ScoreSource == "nvd" {
+		cve.CvssVersion, cve.BaseScore, cve.BaseSeverity, cve.VectorString = "", 0, "", ""
+		cve.AttackVector, cve.AttackComplexity, cve.PrivilegesRequired, cve.UserInteraction = "", "", "", ""
+		cve.Scope, cve.ConfidentialityImpact, cve.IntegrityImpact, cve.AvailabilityImpact = "", "", "", ""
+		cve.ScoreSource = ""
+	}
+	cve.NVDStatus, cve.NVDProducts = "", nil
+	if cve.CWEFromNVD {
+		cve.CWE, cve.CWEFromNVD = "", false
+	}
+	if n == nil {
+		return
+	}
+	cve.NVDStatus = n.Status
+	cve.NVDProducts = n.Products
+	if cve.BaseScore == 0 && n.Score > 0 {
+		cve.ScoreSource = "nvd"
+		cve.CvssVersion, cve.BaseScore, cve.BaseSeverity, cve.VectorString = n.Version, n.Score, n.Severity, n.Vector
+		cve.AttackVector = vectorAttackVector(n.Vector)
+	}
+	if cve.CWE == "" && n.CWE != "" {
+		cve.CWE, cve.CWEFromNVD = n.CWE, true
+	}
+}
+
+// vectorAttackVector reads AV from a CVSS vector so NVD scores feed the attack-vector facet
+func vectorAttackVector(v string) string {
+	for _, part := range strings.Split(v, "/") {
+		if k, val, ok := strings.Cut(part, ":"); ok && k == "AV" {
+			return normalizeAttackVector(val)
+		}
+	}
+	return ""
 }
 
 // ---- Vendor / product normalization ----
@@ -196,6 +265,8 @@ func (ds *Dataset) buildKeys() {
 		if len(aps) == 0 && (cve.Vendor != "" || cve.Product != "") {
 			aps = []AffectedProduct{{Vendor: cve.Vendor, Product: cve.Product}}
 		}
+		// NVD's CPE products make CVEs whose record says "n/a" findable by vendor
+		aps = append(slices.Clip(aps), cve.NVDProducts...)
 		var vk, pk []string
 		for _, ap := range aps {
 			if !isPlaceholderName(ap.Vendor) {
@@ -234,25 +305,33 @@ func (ds *Dataset) buildOptions() {
 		for i := range ds.CVEs {
 			cve := &ds.CVEs[i]
 			seen := map[string]bool{}
-			for _, ap := range cve.AffectedProducts {
+			add := func(ap AffectedProduct, weight int) {
 				name := strings.TrimSpace(get(ap))
 				if isPlaceholderName(name) {
-					continue
+					return
 				}
 				k := norm(name)
 				if k == "" {
-					continue
+					return
 				}
 				g := groups[k]
 				if g == nil {
 					g = &agg{spelling: map[string]int{}}
 					groups[k] = g
 				}
-				g.spelling[name]++
+				g.spelling[name] += weight
 				if !seen[k] {
 					seen[k] = true
 					g.count++
 				}
+			}
+			for _, ap := range cve.AffectedProducts {
+				add(ap, 1)
+			}
+			// CPE spellings ("palo alto networks") count toward totals but only
+			// name the option when no CVE record spells it
+			for _, ap := range cve.NVDProducts {
+				add(ap, 0)
 			}
 		}
 		out := make([]Option, 0, len(groups))
@@ -411,6 +490,14 @@ func searchFields(cve *CVE, emit func(string)) {
 		emit(ap.Vendor)
 		emit(ap.Product)
 	}
+	for _, ap := range cve.NVDProducts {
+		emit(ap.Vendor)
+		emit(ap.Product)
+	}
+	for _, p := range cve.Packages {
+		emit(p.Name)
+	}
+	emit(cve.CWEName)
 }
 
 func buildSearchIndex(cves []CVE) *SearchIndex {

@@ -253,9 +253,95 @@ func exploitEvidence(cve *CVE) []Evidence {
 	case "poc":
 		out = append(out, Evidence{Kind: "ssvc-poc", Detail: "CISA reports a public proof of concept in its SSVC assessment"})
 	}
+	if cve.EUVDExploitedSince != "" {
+		out = append(out, Evidence{Kind: "euvd-exploited", Detail: "ENISA lists it as exploited since " + cve.EUVDExploitedSince,
+			URL: "https://euvd.enisa.europa.eu/vulnerability/" + cve.EUVDID})
+	}
+	if cve.MSRC != nil && cve.MSRC.Exploited {
+		out = append(out, Evidence{Kind: "msrc-exploited", Detail: "Microsoft reports exploitation detected",
+			URL: "https://msrc.microsoft.com/update-guide/vulnerability/" + cve.ID})
+	}
+	known := map[string]bool{}
+	for _, x := range cve.Exploits {
+		known[normalizeURL(x.URL)] = true
+		detail := x.Title
+		if x.Note != "" {
+			detail += " (" + x.Note + ")"
+		}
+		out = append(out, Evidence{Kind: x.Source, Detail: detail, URL: x.URL})
+	}
 	for _, r := range cve.References {
+		if known[normalizeURL(r.URL)] {
+			continue
+		}
 		if e, ok := referenceEvidence(cve, r); ok {
 			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// normalizeURL makes http/https, www and trailing-slash variants compare equal
+func normalizeURL(u string) string {
+	u = strings.ToLower(strings.TrimRight(u, "/"))
+	u = strings.TrimPrefix(strings.TrimPrefix(u, "https://"), "http://")
+	return strings.TrimPrefix(u, "www.")
+}
+
+// Exploit evidence sources, as bits so filtering and facets stay cheap
+const (
+	evMetasploit uint8 = 1 << iota
+	evExploitDB
+	evNuclei
+	evGitHub
+	evCISA
+	evEUVD
+	evMSRC
+	evOther
+)
+
+var evidenceSourceNames = []struct {
+	Bit  uint8
+	Name string
+}{
+	{evMetasploit, "metasploit"}, {evExploitDB, "exploitdb"}, {evNuclei, "nuclei"}, {evGitHub, "github"},
+	{evCISA, "cisa"}, {evEUVD, "euvd"}, {evMSRC, "msrc"}, {evOther, "other"},
+}
+
+func evidenceBits(ev []Evidence) uint8 {
+	var bits uint8
+	for _, e := range ev {
+		switch e.Kind {
+		case "metasploit":
+			bits |= evMetasploit
+		case "exploitdb":
+			bits |= evExploitDB
+		case "nuclei":
+			bits |= evNuclei
+		case "github", "github-poc":
+			bits |= evGitHub
+		case "ssvc-active", "ssvc-poc":
+			bits |= evCISA
+		case "euvd-exploited":
+			bits |= evEUVD
+		case "msrc-exploited":
+			bits |= evMSRC
+		default:
+			if strings.Contains(strings.ToLower(e.URL), "exploit-db.com/") {
+				bits |= evExploitDB
+			} else {
+				bits |= evOther
+			}
+		}
+	}
+	return bits
+}
+
+func evidenceNames(bits uint8) []string {
+	var out []string
+	for _, s := range evidenceSourceNames {
+		if bits&s.Bit != 0 {
+			out = append(out, s.Name)
 		}
 	}
 	return out
@@ -308,4 +394,10 @@ func isGitHubPoC(u, cveID string) bool {
 
 func hasPublicExploit(cve *CVE) bool {
 	return len(exploitEvidence(cve)) > 0
+}
+
+// setExploitEvidence records which sources show exploit evidence for cve
+func setExploitEvidence(cve *CVE) {
+	cve.EvidenceBits = evidenceBits(exploitEvidence(cve))
+	cve.PublicExploit = cve.EvidenceBits != 0
 }

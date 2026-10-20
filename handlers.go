@@ -28,8 +28,9 @@ func (app *App) handleHealth(c echo.Context) error {
 	resp := map[string]any{"status": app.statusString()}
 	if ds := app.dataset(); ds != nil {
 		resp["cves"] = len(ds.CVEs)
-		if src := app.sources.Load(); src != nil {
-			resp["sources"] = src
+		if src := app.sourceTimes.Load(); src != nil {
+			resp["sources"] = src.Times
+			resp["cveDelta"] = src.CVEDelta
 		}
 	}
 	return c.JSON(http.StatusOK, resp)
@@ -138,13 +139,32 @@ func (app *App) handleRelated(c echo.Context) error {
 	})
 }
 
+// handleEPSSHistory proxies FIRST's EPSS time series for one CVE
+func (app *App) handleEPSSHistory(c echo.Context) error {
+	id := strings.ToUpper(c.Param("id"))
+	if !cveIDRe.MatchString(id) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid CVE ID"})
+	}
+	points, err := app.epssHistory(id)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]string{"error": "EPSS history unavailable"})
+	}
+	return c.JSON(http.StatusOK, points)
+}
+
 func (app *App) handleGetStats(c echo.Context) error {
 	ds := app.dataset()
 	stats := ds.stats
-	if src := app.sources.Load(); src != nil {
-		stats.Sources = *src
-		stats.LastDataUpdate = src.CVE
-		next := time.Until(src.CVE.Add(DeltaInterval))
+	for _, s := range app.board.snapshot() {
+		if s.State == "error" {
+			stats.SourceErrors = append(stats.SourceErrors, s.Label)
+		}
+	}
+	if src := app.sourceTimes.Load(); src != nil {
+		stats.Sources = src.Times
+		stats.CVEDelta = src.CVEDelta
+		stats.LastDataUpdate = src.Times["cve"]
+		next := time.Until(stats.LastDataUpdate.Add(DeltaInterval))
 		if next > 0 {
 			stats.NextUpdateIn = fmt.Sprintf("%dm", int(next.Minutes())+1)
 		} else {

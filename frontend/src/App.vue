@@ -5,6 +5,7 @@ import FilterPanel from "./components/FilterPanel.vue";
 import ResultsTable from "./components/ResultsTable.vue";
 import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
+import SourcesPanel from "./components/SourcesPanel.vue";
 import {
   state,
   results,
@@ -22,7 +23,8 @@ import {
   saved,
   saveCurrentSearch,
 } from "./lib/store.js";
-import { SEVERITY_LABEL, ATTACK_VECTOR_LABEL, fmtNum, fmtRelative, fmtDate, fmtEpss } from "./lib/format.js";
+import { SEVERITY_LABEL, ATTACK_VECTOR_LABEL, EXPLOIT_SOURCE_LABEL, fmtNum, fmtRelative, fmtDate, fmtEpss } from "./lib/format.js";
+import { explain } from "./lib/glossary.js";
 
 const f = state.filters;
 const isKev = computed(() => state.view === "kev");
@@ -62,6 +64,7 @@ watch(showChart, (v) => storageSet("webcve.chart", v ? "1" : "0"));
 
 const filtersOpen = ref(false);
 const showHelp = ref(false);
+const showSources = ref(new URLSearchParams(location.search).has("sources"));
 
 // ---- Search ----
 const searchEl = ref(null);
@@ -151,7 +154,8 @@ function onKey(e) {
       if (cursor.value >= 0 && results.cves[cursor.value]) openCve(results.cves[cursor.value].id);
       break;
     case "Escape":
-      if (showHelp.value) showHelp.value = false;
+      if (showSources.value) showSources.value = false;
+      else if (showHelp.value) showHelp.value = false;
       else if (state.selectedId) closeCve();
       else if (filtersOpen.value) filtersOpen.value = false;
       break;
@@ -188,6 +192,9 @@ const chips = computed(() => {
   if (f.kevDue)
     out.push({ key: "due", label: f.kevDue === "overdue" ? "Overdue" : `Due ≤ ${f.kevDue}d`, remove: () => (f.kevDue = "") });
   if (f.exploit) out.push({ key: "x", label: "Exploit evidence", remove: () => (f.exploit = false) });
+  f.exploitSources.forEach((k) =>
+    out.push({ key: `xs-${k}`, label: EXPLOIT_SOURCE_LABEL[k] || k, remove: () => f.exploitSources.splice(f.exploitSources.indexOf(k), 1) })
+  );
   if (f.epssMin != null) out.push({ key: "epss", label: `EPSS ≥ ${fmtEpss(f.epssMin)}`, remove: () => (f.epssMin = null) });
   if (f.since) out.push({ key: "since", label: `New since ${fmtDate(f.since)}`, cls: "accent", remove: () => (f.since = "") });
   f.severities.forEach((s) =>
@@ -270,7 +277,13 @@ const freshness = computed(() => {
   ]
     .filter(Boolean)
     .join("\n");
-  return { text: fmtRelative(d), stale: days > 2, title };
+  const errors = stats.value.sourceErrors || [];
+  return {
+    text: errors.length ? `${errors.length} source${errors.length > 1 ? "s" : ""} failing` : `updated ${fmtRelative(d)}`,
+    stale: days > 2,
+    failing: errors.length > 0,
+    title: (errors.length ? `Failing: ${errors.join(", ")}\n\n` : "") + title + "\n\nClick for all data sources",
+  };
 });
 
 // ---- Export ----
@@ -363,15 +376,16 @@ function closePopovers(e) {
 
       <div class="top-right">
         <div v-if="stats" class="top-stats">
-          <span title="CVE records loaded"><b class="num">{{ fmtNum(stats.totalCves) }}</b> CVEs</span>
-          <span
+          <span><b class="num">{{ fmtNum(stats.totalCves) }}</b> <Term k="CVE">CVEs</Term></span>
+          <button
             v-if="freshness"
             class="fresh"
-            :class="{ stale: freshness.stale }"
+            :class="{ stale: freshness.stale, failing: freshness.failing }"
             :title="freshness.title"
+            @click="showSources = true"
           >
-            <span class="fresh-dot" />{{ freshness.stale ? "Stale · " : "" }}updated {{ freshness.text }}
-          </span>
+            <span class="fresh-dot" />{{ freshness.stale && !freshness.failing ? "Stale · " : "" }}{{ freshness.text }}
+          </button>
         </div>
         <button class="btn ghost icon help-toggle" title="Keyboard shortcuts and search syntax (?)" @click="showHelp = !showHelp"><Icon name="keyboard" /></button>
         <button class="btn ghost icon" :title="`Theme: ${theme}`" @click="cycleTheme"><Icon :name="themeIcon" /></button>
@@ -395,7 +409,8 @@ function closePopovers(e) {
               @click="setView(key)"
             >
               <Icon :name="key === 'kev' ? 'flame' : 'list'" :size="14" />
-              {{ v.label }}
+              <span v-if="key === 'kev'" v-tip="explain('KEV')">{{ v.label }}</span>
+              <template v-else>{{ v.label }}</template>
               <span v-if="stats" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
             </button>
           </nav>
@@ -408,7 +423,7 @@ function closePopovers(e) {
         <!-- KEV overview tiles -->
         <section v-if="isKev && stats" class="tiles">
           <div class="tile">
-            <div class="tile-label">In catalog</div>
+            <div class="tile-label"><Term k="KEV">In catalog</Term></div>
             <div class="tile-value num">{{ fmtNum(stats.totalKev) }}</div>
             <div class="tile-sub">Released {{ fmtDate(stats.kevCatalogDate?.slice(0, 10)) }}</div>
           </div>
@@ -418,12 +433,12 @@ function closePopovers(e) {
             <div class="tile-sub">{{ f.kevDays === 30 ? "Filtering · click to clear" : "Click to filter" }}</div>
           </button>
           <button class="tile clickable" :class="{ on: f.kevDue === '30' }" @click="f.kevDue = f.kevDue === '30' ? '' : '30'">
-            <div class="tile-label">Due next 30 days</div>
+            <div class="tile-label"><Term k="Due date">Due next 30 days</Term></div>
             <div class="tile-value num">{{ fmtNum(stats.kevDueNext30) }}</div>
             <div class="tile-sub">{{ f.kevDue === "30" ? "Filtering · click to clear" : "Click to filter" }}</div>
           </button>
           <button class="tile clickable" :class="{ on: f.ransomware }" @click="f.ransomware = !f.ransomware">
-            <div class="tile-label">Ransomware-linked</div>
+            <div class="tile-label"><Term k="Ransomware">Ransomware-linked</Term></div>
             <div class="tile-value num danger">{{ fmtNum(stats.kevRansomware) }}</div>
             <div class="tile-sub">{{ f.ransomware ? "Filtering · click to clear" : "Click to filter" }}</div>
           </button>
@@ -572,6 +587,8 @@ function closePopovers(e) {
       </div>
     </Transition>
 
+    <SourcesPanel v-if="showSources" @close="showSources = false" />
+
     <!-- Shortcuts -->
     <Transition name="fade">
       <div v-if="showHelp" class="help" role="dialog" aria-label="Keyboard shortcuts">
@@ -588,6 +605,9 @@ function closePopovers(e) {
           <div><dt><span class="kbd">1</span> <span class="kbd">2</span></dt><dd>All CVEs / KEV view</dd></div>
           <div><dt><span class="kbd">f</span></dt><dd>Toggle filters (narrow screens)</dd></div>
         </dl>
+        <button class="btn sm sources-link" @click="(showSources = true), (showHelp = false)">
+          <Icon name="list" :size="13" /> Data sources and update status
+        </button>
         <div class="help-head syntax-head"><b>Search syntax</b></div>
         <dl class="syntax">
           <div><dt><code>log4j rce</code></dt><dd>All words, any order</dd></div>
@@ -713,6 +733,26 @@ function closePopovers(e) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 3px 8px;
+  margin: -3px -8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+}
+.fresh:hover {
+  background: var(--surface-hover);
+}
+.fresh.failing {
+  color: var(--danger);
+  font-weight: 600;
+}
+.fresh.failing .fresh-dot {
+  background: var(--danger);
+}
+.sources-link {
+  margin-top: 10px;
 }
 .fresh-dot {
   width: 7px;

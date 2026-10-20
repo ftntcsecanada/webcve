@@ -55,13 +55,19 @@ type App struct {
 	enr      Enrichment
 	state    UpdateState
 
-	// sources is a snapshot of state times for /api/stats, readable without updateMu
-	sources atomic.Pointer[SourceTimes]
+	// sourceTimes is a snapshot of update times for /api/stats, readable without updateMu
+	sourceTimes atomic.Pointer[sourceSnapshot]
 	// fullRunning stops deltas from writing into the tree while a full refresh replaces it
 	fullRunning atomic.Bool
+	// dirty asks the rebuilder to republish with the current enrichment
+	dirty atomic.Bool
+
+	epssMu    sync.Mutex
+	epssCache map[string]epssCacheEntry
 
 	alerts *Alerter
 	client *http.Client
+	board  *statusBoard
 }
 
 // UpdateState is persisted so restarts resume incremental updates
@@ -73,12 +79,20 @@ type UpdateState struct {
 	KEV       time.Time `json:"kev"`
 	EPSS      time.Time `json:"epss"`
 	EPSSDate  string    `json:"epssDate"`
+
+	// Other sources: last successful fetch, HTTP ETags, NVD sync progress
+	Fetched      map[string]time.Time `json:"fetched"`
+	ETags        map[string]string    `json:"etags"`
+	NVDWatermark time.Time            `json:"nvdWatermark"`
+	NVDResume    int                  `json:"nvdResume"`
 }
 
 func newApp() *App {
 	app := &App{
-		client: &http.Client{Timeout: 10 * time.Minute},
-		alerts: newAlerterFromEnv(),
+		client:    &http.Client{Timeout: 10 * time.Minute},
+		alerts:    newAlerterFromEnv(),
+		epssCache: map[string]epssCacheEntry{},
+		board:     newStatusBoard(),
 	}
 	app.status.Store("starting")
 	return app
@@ -99,6 +113,12 @@ func (app *App) bootstrap() {
 	app.updateMu.Lock()
 	app.loadState()
 	noUpdates := os.Getenv("WEBCVE_NO_UPDATES") != ""
+	app.board.seed("cve", app.state.CVE)
+	app.board.seed("kev", app.state.KEV)
+	app.board.seed("epss", app.state.EPSS)
+	for name, t := range app.state.Fetched {
+		app.board.seed(name, t)
+	}
 
 	if _, err := os.Stat(KEVPath); err != nil && !noUpdates {
 		app.status.Store("downloading")
@@ -154,32 +174,58 @@ func (app *App) bootstrap() {
 
 	logf("Ready: %d CVEs (%d KEV, %d with EPSS)", ds.stats.TotalCVEs, ds.stats.TotalKEV, ds.stats.WithEPSS)
 
+	go app.rebuilder()
 	if noUpdates {
+		// Still apply whatever source data is already on disk
+		for _, s := range app.sources() {
+			go app.installSource(s)
+		}
 		logf("WEBCVE_NO_UPDATES set: downloads and background updates disabled")
 		return
+	}
+	for _, s := range app.sources() {
+		go app.runSource(s)
 	}
 	go app.loop("cve-delta", DeltaInterval, app.updateCVEs)
 	go app.loop("kev", KEVInterval, app.updateKEV)
 	go app.loop("epss", EPSSInterval, app.updateEPSS)
 }
 
-// loop runs fn now and then every interval, logging failures
+// loop runs fn now and then every interval; failures retry after a few minutes
 func (app *App) loop(name string, every time.Duration, fn func() error) {
 	for {
+		wait := every
 		if err := fn(); err != nil {
 			logf("%s update failed: %v", name, err)
+			wait = min(every, 5*time.Minute)
 		}
-		time.Sleep(every)
+		time.Sleep(wait)
 	}
 }
 
 // publishSources snapshots update times for the stats endpoint. Caller holds updateMu.
 func (app *App) publishSources() {
-	app.sources.Store(&SourceTimes{CVE: app.state.CVE, CVEDelta: app.state.LastDelta, KEV: app.state.KEV, EPSS: app.state.EPSS})
+	times := map[string]time.Time{"cve": app.state.CVE, "kev": app.state.KEV, "epss": app.state.EPSS}
+	for k, v := range app.state.Fetched {
+		times[k] = v
+	}
+	app.sourceTimes.Store(&sourceSnapshot{Times: times, CVEDelta: app.state.LastDelta})
+}
+
+type sourceSnapshot struct {
+	Times    map[string]time.Time
+	CVEDelta string
 }
 
 func (app *App) publish(ds *Dataset) {
 	ds.stats.EPSSDate = app.state.EPSSDate
+	records := 0
+	for i := range ds.CVEs {
+		if !ds.CVEs[i].KEVOnly {
+			records++
+		}
+	}
+	app.board.records("cve", records, "CVE records")
 	app.publishSources()
 	prev := app.ds.Swap(ds)
 	app.status.Store("ready")
@@ -203,6 +249,12 @@ func (app *App) loadState() {
 	data, err := os.ReadFile(StatePath)
 	if err == nil {
 		json.Unmarshal(data, &app.state)
+	}
+	if app.state.Fetched == nil {
+		app.state.Fetched = map[string]time.Time{}
+	}
+	if app.state.ETags == nil {
+		app.state.ETags = map[string]string{}
 	}
 }
 
@@ -298,6 +350,7 @@ func (app *App) loadKEV() error {
 	}
 	app.enr.KEV = index
 	app.enr.KEVCatalogDate = catalog.DateReleased
+	app.board.records("kev", len(index), "exploited CVEs")
 	if app.state.KEV.IsZero() {
 		if info, err := os.Stat(KEVPath); err == nil {
 			app.state.KEV = info.ModTime()
@@ -308,23 +361,26 @@ func (app *App) loadKEV() error {
 }
 
 func (app *App) updateKEV() error {
+	app.board.attempt("kev", "downloading")
 	if err := app.downloadKEV(); err != nil {
+		app.board.fail("kev", err, 5*time.Minute)
 		return err
 	}
 	app.updateMu.Lock()
 	defer app.updateMu.Unlock()
 	prevDate := app.enr.KEVCatalogDate
 	if err := app.loadKEV(); err != nil {
+		app.board.fail("kev", err, 5*time.Minute)
 		return err
 	}
+	app.board.success("kev", app.enr.KEVCatalogDate != prevDate)
 	app.state.KEV = time.Now()
 	app.saveState()
 	if app.enr.KEVCatalogDate != prevDate {
 		logf("KEV catalog changed (%s -> %s), rebuilding", prevDate, app.enr.KEVCatalogDate)
-		app.rebuild()
-	} else {
-		app.publishSources()
+		app.dirty.Store(true)
 	}
+	app.publishSources()
 	return nil
 }
 
@@ -350,6 +406,7 @@ func (app *App) ensureEPSS(force bool) error {
 	}
 	app.enr.EPSS = scores
 	app.enr.EPSSDate = date
+	app.board.records("epss", len(scores), "scored CVEs")
 	app.state.EPSSDate = date
 	if app.state.EPSS.IsZero() {
 		if info, err := os.Stat(EPSSPath); err == nil {
@@ -408,14 +465,18 @@ func (app *App) updateEPSS() error {
 	app.updateMu.Lock()
 	defer app.updateMu.Unlock()
 	prev := app.enr.EPSSDate
+	app.board.attempt("epss", "checking")
 	if err := app.ensureEPSS(false); err != nil {
+		app.board.fail("epss", err, 5*time.Minute)
 		return err
 	}
+	app.board.success("epss", app.enr.EPSSDate != prev)
 	app.saveState()
 	if app.enr.EPSSDate != prev {
 		logf("EPSS scores changed (%s -> %s), rebuilding", prev, app.enr.EPSSDate)
-		app.rebuild()
+		app.dirty.Store(true)
 	}
+	app.publishSources()
 	return nil
 }
 
@@ -499,36 +560,49 @@ func planDeltas(releases []GitHubRelease, asOf time.Time, lastDelta string) []Gi
 	return plan
 }
 
-// updateCVEs applies new delta releases, or a full snapshot when too far behind or weekly
+// updateCVEs applies new delta releases, or a full snapshot when too far behind
+// or weekly, and reports the outcome on the status page
 func (app *App) updateCVEs() error {
+	app.board.attempt("cve", "checking for new releases")
+	changed, err := app.applyCVEUpdates()
+	if err != nil {
+		app.board.fail("cve", err, 5*time.Minute)
+		return err
+	}
+	app.board.success("cve", changed)
+	return nil
+}
+
+func (app *App) applyCVEUpdates() (bool, error) {
 	app.updateMu.Lock()
 	asOf, lastDelta, lastFull := app.state.CVEAsOf, app.state.LastDelta, app.state.Full
 	app.updateMu.Unlock()
 
 	if app.fullRunning.Load() {
-		return nil
+		return false, nil
 	}
 	// Too far behind to replay deltas, or due for the weekly safety-net snapshot
 	if asOf.IsZero() || time.Since(asOf) > MaxDeltaCatchUp || time.Since(lastFull) > FullInterval {
-		return app.fullRefresh()
+		return true, app.fullRefresh()
 	}
 
 	releases, err := app.listReleases(asOf)
 	if err != nil {
-		return err
+		return false, err
 	}
 	plan := planDeltas(releases, asOf, lastDelta)
 	if len(plan) == 0 {
-		return nil
+		return false, nil
 	}
 
 	changed := map[string]CVE{}
-	for _, r := range plan {
+	for n, r := range plan {
+		app.board.progress("cve", fmt.Sprintf("applying delta %d of %d (%s)", n+1, len(plan), r.TagName))
 		url, size := r.asset("_delta_CVEs_at_")
 		logf("Applying CVE delta %s (%.1f MB)", r.TagName, float64(size)/(1<<20))
 		recs, err := app.fetchDelta(url)
 		if err != nil {
-			return fmt.Errorf("delta %s: %w", r.TagName, err)
+			return false, fmt.Errorf("delta %s: %w", r.TagName, err)
 		}
 		for _, c := range recs {
 			changed[c.ID] = c
@@ -539,7 +613,7 @@ func (app *App) updateCVEs() error {
 	defer app.updateMu.Unlock()
 	cur := app.dataset()
 	if cur == nil {
-		return nil
+		return false, nil
 	}
 	cves := slices.Clone(cur.CVEs)
 	added := 0
@@ -563,7 +637,7 @@ func (app *App) updateCVEs() error {
 	if err := saveCache(ds.CVEs); err != nil {
 		logf("Warning: could not save cache: %v", err)
 	}
-	return nil
+	return true, nil
 }
 
 // fetchDelta downloads a delta zip and parses each record, writing it into
@@ -635,6 +709,7 @@ func (app *App) fullRefresh() error {
 		return nil
 	}
 	defer app.fullRunning.Store(false)
+	app.board.progress("cve", "downloading and extracting the full snapshot")
 	asOf, err := app.downloadCVEs()
 	if err != nil {
 		return err

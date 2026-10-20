@@ -75,14 +75,71 @@ type CVE struct {
 	EPSSPercentile float64 `json:"epssPercentile,omitempty"`
 
 	// PublicExploit is set when SSVC says poc/active or a reference points at exploit code
-	PublicExploit bool `json:"publicExploit"`
+	PublicExploit bool  `json:"publicExploit"`
+	EvidenceBits  uint8 `json:"-"`
 
 	// KEVOnly marks a placeholder built from the KEV catalog because the CVE
 	// record isn't in the local corpus yet; a real record replaces it
 	KEVOnly bool `json:"kevOnly,omitempty"`
 
+	// Exploit code and scanner templates from Exploit-DB, Metasploit, Nuclei and PoC-in-GitHub
+	Exploits    []ExploitRef `json:"exploits,omitempty"`
+	GitHubPoCs  int          `json:"githubPocs,omitempty"`  // total repos; Exploits keeps the most starred
+	ScoreSource string       `json:"scoreSource,omitempty"` // "nvd" when the CVSS fields came from NVD
+	NVDStatus   string       `json:"nvdStatus,omitempty"`
+	// Vendor/product pairs from NVD's CPE configurations
+	NVDProducts []AffectedProduct `json:"nvdProducts,omitempty"`
+	// Fixed package versions from OSV (GitHub advisories, language ecosystems, Linux distros)
+	Packages []PackageFix `json:"packages,omitempty"`
+	// ENISA EU Vulnerability Database
+	EUVDID             string `json:"euvdId,omitempty"`
+	EUVDExploitedSince string `json:"euvdExploitedSince,omitempty"`
+	// Microsoft Security Response Center exploitability assessment
+	MSRC       *MSRCInfo `json:"msrc,omitempty"`
+	CWEName    string    `json:"cweName,omitempty"`
+	CWEFromNVD bool      `json:"cweFromNvd,omitempty"`
+
 	// File path for cache validation
 	FilePath string `json:"-"`
+}
+
+// ExploitRef is a link to exploit code or a scanner template
+type ExploitRef struct {
+	Source string `json:"source"` // exploitdb, metasploit, nuclei, github
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+	Date   string `json:"date,omitempty"`
+	Stars  int    `json:"stars,omitempty"`
+	Note   string `json:"note,omitempty"` // e.g. "verified", "exploit module", "auxiliary module"
+}
+
+// PackageFix lists the versions that fix a CVE in one package
+type PackageFix struct {
+	Ecosystem string   `json:"ecosystem"`
+	Name      string   `json:"name"`
+	Fixed     []string `json:"fixed,omitempty"`
+	Advisory  string   `json:"advisory,omitempty"` // OSV/GHSA/distro advisory ID
+}
+
+// MSRCInfo is Microsoft's exploitability assessment for a CVE
+type MSRCInfo struct {
+	Title             string `json:"title"`
+	Exploited         bool   `json:"exploited"`
+	PubliclyDisclosed bool   `json:"publiclyDisclosed"`
+	Assessment        string `json:"assessment,omitempty"` // e.g. "Exploitation More Likely"
+	Release           string `json:"release,omitempty"`    // e.g. "2024-Apr"
+}
+
+// NVDInfo is what we keep from an NVD API record
+type NVDInfo struct {
+	Status   string
+	Version  string
+	Score    float64
+	Severity string
+	Vector   string
+	CWE      string
+	Products []AffectedProduct
+	Modified time.Time
 }
 
 type Reference struct {
@@ -205,28 +262,22 @@ type EPSSScore struct {
 
 // StatsResponse provides database statistics
 type StatsResponse struct {
-	Status         string         `json:"status"`
-	TotalCVEs      int            `json:"totalCves"`
-	LastUpdated    time.Time      `json:"lastUpdated"`
-	LastDataUpdate time.Time      `json:"lastDataUpdate"`
-	NextUpdateIn   string         `json:"nextUpdateIn"`
-	Sources        SourceTimes    `json:"sources"`
-	YearRange      [2]int         `json:"yearRange"`
-	SeverityCounts map[string]int `json:"severityCounts"`
-	TotalKEV       int            `json:"totalKev"`
-	KEVRansomware  int            `json:"kevRansomware"`
-	KEVLast30Days  int            `json:"kevLast30Days"`
-	KEVDueNext30   int            `json:"kevDueNext30"`
-	KEVCatalogDate string         `json:"kevCatalogDate"`
-	WithEPSS       int            `json:"withEpss"`
-	EPSSDate       string         `json:"epssDate"`
-	PublicExploits int            `json:"publicExploits"`
-}
-
-// SourceTimes records when each data source was last refreshed
-type SourceTimes struct {
-	CVE      time.Time `json:"cve"`
-	CVEDelta string    `json:"cveDelta,omitempty"`
-	KEV      time.Time `json:"kev"`
-	EPSS     time.Time `json:"epss"`
+	Status         string               `json:"status"`
+	Sources        map[string]time.Time `json:"sources"`
+	TotalCVEs      int                  `json:"totalCves"`
+	LastUpdated    time.Time            `json:"lastUpdated"`
+	LastDataUpdate time.Time            `json:"lastDataUpdate"`
+	NextUpdateIn   string               `json:"nextUpdateIn"`
+	CVEDelta       string               `json:"cveDelta,omitempty"`
+	SourceErrors   []string             `json:"sourceErrors"`
+	YearRange      [2]int               `json:"yearRange"`
+	SeverityCounts map[string]int       `json:"severityCounts"`
+	TotalKEV       int                  `json:"totalKev"`
+	KEVRansomware  int                  `json:"kevRansomware"`
+	KEVLast30Days  int                  `json:"kevLast30Days"`
+	KEVDueNext30   int                  `json:"kevDueNext30"`
+	KEVCatalogDate string               `json:"kevCatalogDate"`
+	WithEPSS       int                  `json:"withEpss"`
+	EPSSDate       string               `json:"epssDate"`
+	PublicExploits int                  `json:"publicExploits"`
 }

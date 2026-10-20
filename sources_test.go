@@ -1,0 +1,101 @@
+package main
+
+import (
+	"encoding/json"
+	"slices"
+	"testing"
+)
+
+func TestParseCPE(t *testing.T) {
+	v, p, ok := parseCPE(`cpe:2.3:a:palo_alto_networks:pan-os:10.2.0:*:*:*:*:*:*:*`)
+	if !ok || v != "palo alto networks" || p != "pan-os" {
+		t.Fatalf("got %q %q %v", v, p, ok)
+	}
+	if _, _, ok := parseCPE("cpe:2.3:a:*:*:*"); ok {
+		t.Error("wildcard vendor accepted")
+	}
+	if normalizeVendor(v) != normalizeVendor("Palo Alto Networks") {
+		t.Error("CPE vendor doesn't normalize like the CNA spelling")
+	}
+}
+
+func TestNVDInfoPrefersPrimary(t *testing.T) {
+	var c nvdCVE
+	json.Unmarshal([]byte(`{"id":"CVE-2017-0144","vulnStatus":"Analyzed","lastModified":"2025-01-01T00:00:00.000",
+	 "metrics":{"cvssMetricV31":[
+	   {"source":"cna@example","type":"Secondary","cvssData":{"version":"3.1","vectorString":"CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:L","baseScore":5.3,"baseSeverity":"MEDIUM"}},
+	   {"source":"nvd@nist.gov","type":"Primary","cvssData":{"version":"3.1","vectorString":"CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H","baseScore":8.8,"baseSeverity":"HIGH"}}]},
+	 "weaknesses":[{"type":"Primary","description":[{"value":"NVD-CWE-noinfo"}]},{"type":"Secondary","description":[{"value":"CWE-20"}]}],
+	 "configurations":[{"nodes":[{"cpeMatch":[{"vulnerable":true,"criteria":"cpe:2.3:o:microsoft:windows_10:-:*:*:*:*:*:*:*"},{"vulnerable":false,"criteria":"cpe:2.3:h:intel:x86:-:*:*:*:*:*:*:*"}]}]}]}`), &c)
+	info := c.info()
+	if info.Score != 8.8 || info.CWE != "CWE-20" || len(info.Products) != 1 || info.Products[0].Product != "windows 10" {
+		t.Fatalf("unexpected info: %+v", info)
+	}
+	if (&nvdCVE{VulnStatus: "Rejected"}).info() != nil {
+		t.Error("rejected record kept")
+	}
+}
+
+func TestNVDScoreFallback(t *testing.T) {
+	enr := &Enrichment{NVD: map[string]*NVDInfo{
+		"CVE-2020-1": {Status: "Analyzed", Version: "3.1", Score: 9.8, Severity: "CRITICAL", Vector: "CVSS:3.1/AV:N/AC:L", CWE: "CWE-79",
+			Products: []AffectedProduct{{Vendor: "acme", Product: "widget"}}},
+		"CVE-2020-2": {Score: 5.0, Severity: "MEDIUM"},
+	}}
+	ds := buildDataset([]CVE{
+		{ID: "CVE-2020-1", AffectedProducts: []AffectedProduct{{Vendor: "n/a", Product: "n/a"}}},
+		{ID: "CVE-2020-2", BaseScore: 7.5, BaseSeverity: "HIGH", CvssVersion: "3.1"},
+	}, enr)
+	a := ds.CVEs[ds.byID["CVE-2020-1"]]
+	if a.BaseScore != 9.8 || a.ScoreSource != "nvd" || a.AttackVector != "NETWORK" || a.CWE != "CWE-79" {
+		t.Fatalf("NVD fallback not applied: %+v", a)
+	}
+	if b := ds.CVEs[ds.byID["CVE-2020-2"]]; b.BaseScore != 7.5 || b.ScoreSource != "" {
+		t.Errorf("CNA score overwritten: %+v", b)
+	}
+	if got := ids(ds, FilterRequest{Vendors: []string{"Acme"}}); !slices.Equal(got, []string{"CVE-2020-1"}) {
+		t.Errorf("NVD vendor not filterable: %v", got)
+	}
+	// Once NVD drops the score, a rebuild clears what it had filled in
+	enr.NVD = map[string]*NVDInfo{}
+	ds2 := buildDataset(slices.Clone(ds.CVEs), enr)
+	if a := ds2.CVEs[ds2.byID["CVE-2020-1"]]; a.BaseScore != 0 || a.CWE != "" || a.ScoreSource != "" {
+		t.Errorf("stale NVD data survived a rebuild: %+v", a)
+	}
+}
+
+func TestOSVHelpers(t *testing.T) {
+	rec := &osvRecord{ID: "DEBIAN-CVE-2021-44228", Upstream: []string{"CVE-2021-44228"}, Aliases: []string{"GHSA-jfh8-c2jp-5v3q", "CVE-2021-44228"}}
+	if got := osvCVEs(rec); !slices.Equal(got, []string{"CVE-2021-44228"}) {
+		t.Fatalf("osvCVEs = %v", got)
+	}
+	list := mergeFix(nil, PackageFix{Ecosystem: "Maven", Name: "log4j-core", Fixed: []string{"2.15.0"}})
+	list = mergeFix(list, PackageFix{Ecosystem: "Maven", Name: "log4j-core", Fixed: []string{"2.12.2", "2.15.0"}})
+	if len(list) != 1 || !slices.Equal(list[0].Fixed, []string{"2.15.0", "2.12.2"}) {
+		t.Fatalf("mergeFix = %+v", list)
+	}
+}
+
+func TestExploitSourcesAndDedup(t *testing.T) {
+	enr := &Enrichment{
+		Metasploit: map[string][]ExploitRef{"CVE-2024-1": {{Source: "metasploit", Title: "m", URL: "https://www.rapid7.com/db/modules/x/"}}},
+		ExploitDB:  map[string][]ExploitRef{"CVE-2024-1": {{Source: "exploitdb", Title: "e", URL: "https://www.exploit-db.com/exploits/1"}}},
+		EUVD:       map[string]euvdEntry{"CVE-2024-2": {CVE: "CVE-2024-2", EUVD: "EUVD-1", Since: "2024-05-01"}},
+	}
+	ds := buildDataset([]CVE{
+		{ID: "CVE-2024-1", References: []Reference{{URL: "http://exploit-db.com/exploits/1/"}}},
+		{ID: "CVE-2024-2"},
+		{ID: "CVE-2024-3"},
+	}, enr)
+	ev := exploitEvidence(&ds.CVEs[ds.byID["CVE-2024-1"]])
+	if len(ev) != 2 {
+		t.Fatalf("reference duplicating an Exploit-DB entry not deduplicated: %+v", ev)
+	}
+	if got := ids(ds, FilterRequest{ExploitSources: []string{"metasploit", "euvd"}}); !slices.Equal(got, []string{"CVE-2024-1", "CVE-2024-2"}) {
+		t.Errorf("exploit source filter = %v", got)
+	}
+	_, resp := ds.filterCVEs(compileFilter(ds, FilterRequest{ExploitSources: []string{"metasploit"}}), true)
+	if resp.Facets.ExploitSources["euvd"] != 1 || resp.Facets.ExploitSources["metasploit"] != 1 {
+		t.Errorf("exploit source facets = %v", resp.Facets.ExploitSources)
+	}
+}

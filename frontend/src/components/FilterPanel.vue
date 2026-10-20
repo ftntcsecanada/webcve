@@ -3,7 +3,8 @@ import { computed } from "vue";
 import Icon from "./Icon.vue";
 import Combobox from "./Combobox.vue";
 import { state, results, saved, toggleIn, resetFilters, activeFilterCount, openSaved, removeSaved } from "../lib/store.js";
-import { SEVERITIES, SEVERITY_LABEL, ATTACK_VECTORS, ATTACK_VECTOR_LABEL, fmtNum } from "../lib/format.js";
+import { SEVERITIES, SEVERITY_LABEL, ATTACK_VECTORS, ATTACK_VECTOR_LABEL, EXPLOIT_SOURCES, fmtNum } from "../lib/format.js";
+import { explain } from "../lib/glossary.js";
 
 defineEmits(["close"]);
 
@@ -62,6 +63,7 @@ function setScore(min, max) {
 }
 
 const maxSev = computed(() => Math.max(1, ...SEVERITIES.map((s) => results.facets.severity?.[s] || 0)));
+const maxEx = computed(() => Math.max(1, ...EXPLOIT_SOURCES.map(([k]) => results.facets.exploitSources?.[k] || 0)));
 const maxAv = computed(() => Math.max(1, ...ATTACK_VECTORS.map((a) => results.facets.attackVector?.[a] || 0)));
 
 function onNumber(key, e) {
@@ -97,7 +99,7 @@ function onNumber(key, e) {
     <section v-if="!isKev" class="group">
       <label class="switch-row">
         <span class="switch-label">
-          <span class="badge kev">KEV</span>
+          <span v-tip="explain('KEV')" class="badge kev" tabindex="0">KEV</span>
           Known exploited only
         </span>
         <span class="count num">{{ fmtNum(results.facets.kev) }}</span>
@@ -107,7 +109,7 @@ function onNumber(key, e) {
 
     <template v-else>
       <section class="group">
-        <h3>Remediation due</h3>
+        <h3><Term k="Due date">Remediation due</Term></h3>
         <div class="seg">
           <button v-for="[v, label] in duePresets" :key="v" :class="{ on: f.kevDue === v }" @click="f.kevDue = v">{{ label }}</button>
         </div>
@@ -127,7 +129,7 @@ function onNumber(key, e) {
       </section>
       <section class="group">
         <label class="switch-row">
-          <span class="switch-label"><Icon name="lock" :size="14" /> Used in ransomware</span>
+          <span class="switch-label"><Icon name="lock" :size="14" /> <Term k="Ransomware">Used in ransomware</Term></span>
           <span class="count num">{{ fmtNum(results.facets.ransomware) }}</span>
           <input v-model="f.ransomware" type="checkbox" class="switch" />
         </label>
@@ -147,7 +149,8 @@ function onNumber(key, e) {
         >
           <span class="check"><Icon v-if="f.severities.includes(s)" name="check" :size="11" /></span>
           <span class="sev-dot" :class="s" />
-          <span class="facet-label">{{ SEVERITY_LABEL[s] }}</span>
+          <span v-if="s === 'NONE'" v-tip="explain('Unscored')" class="facet-label">{{ SEVERITY_LABEL[s] }}</span>
+          <span v-else class="facet-label">{{ SEVERITY_LABEL[s] }}</span>
           <span class="count num">{{ fmtNum(results.facets.severity?.[s]) }}</span>
           <span class="bar" :style="{ width: ((results.facets.severity?.[s] || 0) / maxSev) * 100 + '%' }" />
         </button>
@@ -155,23 +158,39 @@ function onNumber(key, e) {
     </section>
 
     <section class="group">
-      <label class="switch-row">
-        <span class="switch-label"><Icon name="bug" :size="14" /> Exploit evidence</span>
-        <span class="count num">{{ fmtNum(results.facets.exploit) }}</span>
-        <input v-model="f.exploit" type="checkbox" class="switch" />
-      </label>
-      <p class="hint">CISA reports a public PoC or active exploitation, or a reference links to exploit code (tagged links, exploit archives, GitHub PoCs). Open a CVE to see which.</p>
+      <h3><Term k="Exploit evidence" /></h3>
+      <div class="facets">
+        <button class="facet" :class="{ on: f.exploit }" :aria-pressed="f.exploit" @click="f.exploit = !f.exploit">
+          <span class="check"><Icon v-if="f.exploit" name="check" :size="11" /></span>
+          <span class="facet-label">Any evidence</span>
+          <span class="count num">{{ fmtNum(results.facets.exploit) }}</span>
+        </button>
+        <button
+          v-for="[k, label, term] in EXPLOIT_SOURCES"
+          :key="k"
+          v-tip="term ? explain(term) : 'An exploit link in the CVE references that isn\'t from one of the sources above.'"
+          class="facet sub"
+          :class="{ on: f.exploitSources.includes(k) }"
+          :aria-pressed="f.exploitSources.includes(k)"
+          @click="toggleIn(f.exploitSources, k)"
+        >
+          <span class="check"><Icon v-if="f.exploitSources.includes(k)" name="check" :size="11" /></span>
+          <span class="facet-label">{{ label }}</span>
+          <span class="count num">{{ fmtNum(results.facets.exploitSources?.[k]) }}</span>
+          <span class="bar neutral" :style="{ width: ((results.facets.exploitSources?.[k] || 0) / maxEx) * 100 + '%' }" />
+        </button>
+      </div>
     </section>
 
     <section class="group">
-      <h3 title="Exploit Prediction Scoring System: probability of exploitation activity in the next 30 days">Exploit likelihood (EPSS)</h3>
+      <h3>Exploit likelihood (<Term k="EPSS" />)</h3>
       <div class="seg">
         <button v-for="[v, label] in epssPresets" :key="label" :class="{ on: f.epssMin === v }" @click="f.epssMin = v">{{ label }}</button>
       </div>
     </section>
 
     <section class="group">
-      <h3>CVSS score</h3>
+      <h3><Term k="CVSS" /> score</h3>
       <div class="seg">
         <button
           v-for="[label, min, max] in scorePresets"
@@ -190,7 +209,7 @@ function onNumber(key, e) {
     </section>
 
     <section class="group">
-      <h3>Attack vector</h3>
+      <h3><Term k="Attack vector">Attack vector</Term></h3>
       <div class="facets">
         <button
           v-for="a in ATTACK_VECTORS"
@@ -243,7 +262,7 @@ function onNumber(key, e) {
     </section>
 
     <section class="group">
-      <h3>Weakness (CWE)</h3>
+      <h3>Weakness (<Term k="CWE" />)</h3>
       <Combobox v-model="f.cwe" field="cwe" placeholder="e.g. CWE-79" />
     </section>
   </aside>
@@ -307,6 +326,9 @@ h3 {
 }
 .facet:hover {
   background: var(--surface-hover);
+}
+.facet.sub {
+  padding-left: 22px;
 }
 .facet .bar {
   position: absolute;

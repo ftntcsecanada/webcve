@@ -18,7 +18,9 @@ import {
   summaryText,
   SSVC_LABEL,
   EVIDENCE_LABEL,
+  EVIDENCE_TERM,
 } from "../lib/format.js";
+import { explain, metricExplanation } from "../lib/glossary.js";
 
 const props = defineProps({
   id: { type: String, default: null },
@@ -35,6 +37,7 @@ const scroller = ref(null);
 const showAllProducts = ref(false);
 const showAllEvidence = ref(false);
 const related = ref(null);
+const epssHistory = ref([]);
 
 watch(
   () => props.id,
@@ -45,9 +48,16 @@ watch(
     showAllProducts.value = false;
     showAllEvidence.value = false;
     related.value = null;
+    epssHistory.value = [];
     fetchRelated(id).then((r) => {
       if (props.id === id) related.value = r;
     });
+    fetch(`/api/cves/${encodeURIComponent(id)}/epss-history`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((pts) => {
+        if (props.id === id) epssHistory.value = pts || [];
+      })
+      .catch(() => {});
     try {
       const data = await fetchCve(id);
       if (props.id !== id) return;
@@ -119,6 +129,32 @@ const ssvc = computed(() => {
 
 const v4Metrics = computed(() => parseCvssVector(cve.value?.cvssV4Vector));
 
+// EPSS 30-day trend as a small line; y is scaled to the series so changes are visible
+const trend = computed(() => {
+  const pts = epssHistory.value;
+  if (pts.length < 2) return null;
+  const W = 132, H = 30, P = 3;
+  const vals = pts.map((p) => p.epss);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = hi - lo || 1;
+  const xy = pts.map((p, i) => [P + (i / (pts.length - 1)) * (W - 2 * P), H - P - ((p.epss - lo) / span) * (H - 2 * P)]);
+  const first = vals[0], last = vals[vals.length - 1];
+  const change = last - first;
+  return {
+    W, H,
+    d: xy.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(""),
+    end: xy[xy.length - 1],
+    dir: Math.abs(change) < 0.0005 ? "flat" : change > 0 ? "up" : "down",
+    label: `${fmtEpss(first)} → ${fmtEpss(last)} over ${pts.length} days (${pts[0].date} to ${pts[pts.length - 1].date})`,
+  };
+});
+
+const MSRC_ASSESSMENT_LEVEL = { "Exploitation Detected": "high", "Exploitation More Likely": "med" };
+
+const nvdProducts = computed(() => cve.value?.nvdProducts || []);
+const packages = computed(() => cve.value?.packages || []);
+const showAllPackages = ref(false);
+
 function openRelated(id) {
   state.selectedId = id;
 }
@@ -185,10 +221,11 @@ const riskLabel = ["", "low", "med", "high"];
           <div class="headline">
             <h3>{{ cve.title || cve.kevName || "Untitled vulnerability" }}</h3>
             <div class="hl-meta">
-              <span v-if="cve.inKEV" class="badge kev"><Icon name="flame" :size="11" />Known exploited</span>
-              <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" class="badge danger"><Icon name="lock" :size="11" />Ransomware</span>
-              <span v-if="cve.publicExploit && !cve.inKEV" class="badge warn"><Icon name="bug" :size="11" />Exploit evidence</span>
-              <span v-if="cve.cvssVersion" class="badge">CVSS {{ cve.cvssVersion }}</span>
+              <span v-if="cve.inKEV" v-tip="explain('KEV')" class="badge kev"><Icon name="flame" :size="11" />Known exploited</span>
+              <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" v-tip="explain('Ransomware')" class="badge danger"><Icon name="lock" :size="11" />Ransomware</span>
+              <span v-if="cve.publicExploit && !cve.inKEV" v-tip="explain('Exploit evidence')" class="badge warn"><Icon name="bug" :size="11" />Exploit evidence</span>
+              <span v-if="cve.cvssVersion" v-tip="explain('CVSS')" class="badge">CVSS {{ cve.cvssVersion }}</span>
+              <span v-if="cve.scoreSource === 'nvd'" v-tip="'The CVE record has no score, so this one comes from NVD\'s analysis.'" class="badge">Score from NVD</span>
               <span v-if="cve.state && cve.state !== 'PUBLISHED'" class="badge warn">{{ cve.state }}</span>
             </div>
           </div>
@@ -201,22 +238,38 @@ const riskLabel = ["", "low", "med", "high"];
 
         <!-- Risk signals -->
         <section class="signals">
-          <div class="signal" :title="cve.epss ? 'Probability of exploitation activity in the next 30 days (FIRST EPSS)' : 'No EPSS score published'">
-            <div class="sig-label">EPSS · 30-day exploit likelihood</div>
-            <div class="sig-value num" :class="epssLevel(cve.epss)">{{ fmtEpss(cve.epss) }}</div>
+          <div class="signal">
+            <div class="sig-label"><Term k="EPSS" /> · 30-day exploit likelihood</div>
+            <div class="sig-value num" :class="epssLevel(cve.epss)">
+              {{ fmtEpss(cve.epss) }}
+              <svg v-if="trend" v-tip="`30-day trend: ${trend.label}`" class="spark" :class="trend.dir" :width="trend.W" :height="trend.H" tabindex="0" role="img" :aria-label="`EPSS trend ${trend.label}`">
+                <path :d="trend.d" />
+                <circle :cx="trend.end[0]" :cy="trend.end[1]" r="2.5" />
+              </svg>
+            </div>
             <template v-if="cve.epss">
               <div class="pct-bar"><span :class="epssLevel(cve.epss)" :style="{ width: cve.epssPercentile * 100 + '%' }" /></div>
-              <div class="sig-sub">{{ fmtPercentile(cve.epssPercentile) }}</div>
+              <div class="sig-sub"><Term k="percentile">{{ fmtPercentile(cve.epssPercentile) }}</Term></div>
             </template>
+            <div v-else class="sig-sub">No EPSS score published</div>
           </div>
           <div v-if="ssvc" class="signal">
-            <div class="sig-label">CISA SSVC</div>
+            <div class="sig-label">CISA <Term k="SSVC" /></div>
             <ul class="ssvc">
-              <li v-for="[k, v, lvl] in ssvc" :key="k" :class="lvl"><span class="muted">{{ k }}</span> {{ v }}</li>
+              <li v-for="[k, v, lvl] in ssvc" :key="k" :class="lvl"><Term :k="k" class="muted">{{ k }}</Term> {{ v }}</li>
             </ul>
           </div>
+          <div v-if="cve.msrc" class="signal">
+            <div class="sig-label">Microsoft <Term k="MSRC" /></div>
+            <div class="msrc" :class="cve.msrc.exploited ? 'high' : MSRC_ASSESSMENT_LEVEL[cve.msrc.assessment]">
+              {{ cve.msrc.exploited ? "Exploitation detected" : cve.msrc.assessment || "No assessment" }}
+            </div>
+            <div class="sig-sub">
+              {{ cve.msrc.publiclyDisclosed ? "Publicly disclosed" : "Not publicly disclosed" }} · {{ cve.msrc.release }}
+            </div>
+          </div>
           <div v-if="cve.cvssV4Score" class="signal">
-            <div class="sig-label">CVSS 4.0</div>
+            <div class="sig-label"><Term k="CVSS 4.0" /></div>
             <div class="sig-value num">
               <span class="sev-pill" :class="severityKey(cve.cvssV4Severity)">{{ cve.cvssV4Score.toFixed(1) }}</span>
               <span class="sig-sev">{{ SEVERITY_LABEL[severityKey(cve.cvssV4Severity)] }}</span>
@@ -230,11 +283,14 @@ const riskLabel = ["", "low", "med", "high"];
           <ul>
             <li v-for="g in evidenceGroups" :key="g.kind" :class="g.kind">
               <span class="ev-kind">
-                {{ EVIDENCE_LABEL[g.kind] || g.kind }}
+                <Term :k="EVIDENCE_TERM[g.kind] || g.kind">{{ EVIDENCE_LABEL[g.kind] || g.kind }}</Term>
                 <span v-if="g.urls.length > 1" class="count num">{{ g.urls.length }}</span>
               </span>
               <div class="ev-body">
-                <span class="ev-detail">{{ g.detail }}<template v-if="g.kind.startsWith('ssvc')">. CISA doesn't publish where the exploit is.</template></span>
+                <span v-if="g.kind === 'github' || g.kind === 'github-poc'" class="ev-detail caution">
+                  Community-indexed and unvetted: some PoC repositories are fake or contain malware. Review code before running it.
+                </span>
+                <span v-else class="ev-detail">{{ g.detail }}<template v-if="g.kind.startsWith('ssvc')">. CISA doesn't publish where the exploit is.</template></span>
                 <a
                   v-for="u in showAllEvidence ? g.urls : g.urls.slice(0, 4)"
                   :key="u"
@@ -256,7 +312,7 @@ const riskLabel = ["", "low", "med", "high"];
 
         <!-- KEV callout -->
         <section v-if="cve.inKEV" class="kev-card">
-          <div class="kev-title"><Icon name="flame" :size="15" /> CISA Known Exploited Vulnerability</div>
+          <div class="kev-title"><Icon name="flame" :size="15" /> <Term k="KEV" text="">CISA Known Exploited Vulnerability</Term></div>
           <div v-if="cve.kevName" class="kev-name">{{ cve.kevName }}</div>
           <dl class="kev-grid">
             <div>
@@ -264,19 +320,19 @@ const riskLabel = ["", "low", "med", "high"];
               <dd>{{ fmtDate(cve.kevDateAdded) }} <span class="muted">· {{ fmtRelative(cve.kevDateAdded) }}</span></dd>
             </div>
             <div>
-              <dt>Remediation due</dt>
+              <dt><Term k="Due date">Remediation due</Term></dt>
               <dd>
                 {{ fmtDate(cve.kevDueDate) }}
                 <span v-if="due" class="due" :class="due.cls">{{ due.text }}</span>
               </dd>
             </div>
             <div>
-              <dt>Ransomware use</dt>
+              <dt><Term k="Ransomware">Ransomware use</Term></dt>
               <dd :class="{ danger: cve.kevKnownRansomwareCampaign === 'Known' }">{{ cve.kevKnownRansomwareCampaign || "Unknown" }}</dd>
             </div>
           </dl>
           <div v-if="cve.kevRequiredAction" class="kev-action">
-            <dt>Required action</dt>
+            <dt><Term k="BOD 22-01">Required action</Term></dt>
             <dd>{{ cve.kevRequiredAction }}</dd>
           </div>
           <ul v-if="kevNotes.length" class="kev-notes">
@@ -294,21 +350,21 @@ const riskLabel = ["", "low", "med", "high"];
 
         <!-- CVSS -->
         <section v-if="cve.vectorString" class="block">
-          <h4>Exploitability &amp; impact</h4>
+          <h4><Term k="CVSS" /> exploitability &amp; impact</h4>
           <div class="metrics">
-            <div v-for="m in metrics" :key="m.key" class="metric" :class="riskLabel[m.risk]" :title="`${m.key}: ${m.value}`">
+            <div v-for="m in metrics" :key="m.key" v-tip="metricExplanation(m.label)" class="metric" :class="riskLabel[m.risk]">
               <span class="m-label">{{ m.label }}</span>
               <span class="m-value">{{ m.value }}</span>
             </div>
           </div>
-          <button class="vector mono" :title="copied === 'vec' ? 'Copied' : 'Copy vector'" @click="copy(cve.vectorString, 'vec')">
+          <button v-tip="`${explain('Vector string')} Click to copy.`" class="vector mono" @click="copy(cve.vectorString, 'vec')">
             {{ cve.vectorString }}
             <Icon :name="copied === 'vec' ? 'check' : 'copy'" :size="12" />
           </button>
           <details v-if="v4Metrics.length" class="v4">
             <summary>CVSS 4.0 metrics</summary>
             <div class="metrics">
-              <div v-for="m in v4Metrics" :key="m.key" class="metric" :class="riskLabel[m.risk]" :title="`${m.key}: ${m.value}`">
+              <div v-for="m in v4Metrics" :key="m.key" v-tip="metricExplanation(m.label)" class="metric" :class="riskLabel[m.risk]">
                 <span class="m-label">{{ m.label }}</span>
                 <span class="m-value">{{ m.value }}</span>
               </div>
@@ -322,10 +378,13 @@ const riskLabel = ["", "low", "med", "high"];
 
         <!-- Weakness -->
         <section v-if="cve.cwe" class="block">
-          <h4>Weakness</h4>
+          <h4>Weakness (<Term k="CWE" />)</h4>
           <div class="cwe">
-            <button class="cwe-id mono" title="Filter by this CWE" @click="state.filters.cwe = cve.cwe">{{ cve.cwe }}</button>
-            <span class="cwe-desc">{{ (cve.cweDescription || "").replace(/^CWE-\d+:?\s*/, "") }}</span>
+            <button v-tip="'Show all CVEs with this weakness'" class="cwe-id mono" @click="state.filters.cwe = cve.cwe">{{ cve.cwe }}</button>
+            <span class="cwe-desc">
+              {{ cve.cweName || (cve.cweDescription || "").replace(/^CWE-\d+:?\s*/, "") }}
+              <span v-if="cve.cweFromNvd" v-tip="'The CVE record names no weakness; this is NVD\'s classification.'" class="muted"> · from NVD</span>
+            </span>
             <a v-if="cweNumber" class="ext" :href="`https://cwe.mitre.org/data/definitions/${cweNumber}.html`" target="_blank" rel="noopener noreferrer" title="Open on MITRE">
               <Icon name="external" :size="13" />
             </a>
@@ -346,6 +405,47 @@ const riskLabel = ["", "low", "med", "high"];
           </ul>
           <button v-if="productCount > 8 && !showAllProducts" class="btn sm show-more" @click="showAllProducts = true">
             Show all {{ productCount }}
+          </button>
+        </section>
+
+        <!-- NVD's CPE products: the only product data when the record says n/a -->
+        <section v-if="nvdProducts.length" class="block">
+          <h4>
+            <template v-if="productCount">Products according to NVD</template>
+            <template v-else>Affected products (from NVD)</template>
+            <Term k="CPE" />
+            <span class="count">{{ nvdProducts.length }}</span>
+          </h4>
+          <ul class="products">
+            <li v-for="(p, i) in nvdProducts.slice(0, productCount ? 6 : 12)" :key="i">
+              <button v-tip="'Filter by this product'" class="prod" @click="filterBy(p.vendor, p.product)">
+                <span class="p-vendor">{{ p.vendor }}</span>
+                <span class="p-name">{{ p.product }}</span>
+              </button>
+            </li>
+          </ul>
+        </section>
+
+        <!-- Fixed versions from OSV -->
+        <section v-if="packages.length" class="block">
+          <h4><Term k="Fixed versions" /> (<Term k="OSV" />) <span class="count">{{ packages.length }}</span></h4>
+          <table class="pkgs">
+            <tbody>
+              <tr v-for="(p, i) in showAllPackages ? packages : packages.slice(0, 8)" :key="i">
+                <td class="pk-eco">{{ p.ecosystem }}</td>
+                <td class="pk-name mono">{{ p.name }}</td>
+                <td class="pk-fix mono">
+                  <template v-if="p.fixed?.length">{{ p.fixed.join(", ") }}</template>
+                  <span v-else class="muted">no fix listed</span>
+                </td>
+                <td class="pk-adv">
+                  <a v-if="p.advisory" :href="`https://osv.dev/vulnerability/${p.advisory}`" target="_blank" rel="noopener noreferrer">{{ p.advisory }}</a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <button v-if="packages.length > 8 && !showAllPackages" class="btn sm show-more" @click="showAllPackages = true">
+            Show all {{ packages.length }}
           </button>
         </section>
 
@@ -406,12 +506,16 @@ const riskLabel = ["", "low", "med", "high"];
           <dl class="record">
             <div><dt>Published</dt><dd>{{ fmtDate(cve.datePublished) }}</dd></div>
             <div><dt>Updated</dt><dd>{{ fmtDate(cve.dateUpdated) }}</dd></div>
-            <div><dt>Reserved</dt><dd>{{ fmtDate(cve.dateReserved) }}</dd></div>
-            <div><dt>Assigner</dt><dd>{{ cve.assignerOrg || "—" }}</dd></div>
+            <div><dt><Term k="Reserved" /></dt><dd>{{ fmtDate(cve.dateReserved) }}</dd></div>
+            <div><dt><Term k="Assigner" /></dt><dd>{{ cve.assignerOrg || "—" }}</dd></div>
+            <div v-if="cve.nvdStatus"><dt><Term k="NVD">NVD status</Term></dt><dd>{{ cve.nvdStatus }}</dd></div>
+            <div v-if="cve.euvdId"><dt><Term k="EUVD">EUVD ID</Term></dt><dd class="mono">{{ cve.euvdId }}</dd></div>
           </dl>
           <div class="ext-links">
             <a class="btn sm" :href="`https://nvd.nist.gov/vuln/detail/${cve.id}`" target="_blank" rel="noopener noreferrer">NVD <Icon name="external" :size="12" /></a>
             <a class="btn sm" :href="`https://www.cve.org/CVERecord?id=${cve.id}`" target="_blank" rel="noopener noreferrer">CVE.org <Icon name="external" :size="12" /></a>
+            <a v-if="cve.euvdId" class="btn sm" :href="`https://euvd.enisa.europa.eu/vulnerability/${cve.euvdId}`" target="_blank" rel="noopener noreferrer">EUVD <Icon name="external" :size="12" /></a>
+            <a v-if="cve.msrc" class="btn sm" :href="`https://msrc.microsoft.com/update-guide/vulnerability/${cve.id}`" target="_blank" rel="noopener noreferrer">MSRC <Icon name="external" :size="12" /></a>
             <a
               v-if="cve.inKEV"
               class="btn sm"
@@ -811,6 +915,79 @@ h4 .count {
 }
 .kev-only-note .icon {
   margin-top: 2px;
+}
+.spark {
+  margin-left: auto;
+  overflow: visible;
+  cursor: help;
+}
+.spark path {
+  fill: none;
+  stroke: var(--text-3);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.spark circle {
+  fill: var(--text-3);
+}
+.spark.up path {
+  stroke: var(--danger);
+}
+.spark.up circle {
+  fill: var(--danger);
+}
+.spark.down path {
+  stroke: var(--ok);
+}
+.spark.down circle {
+  fill: var(--ok);
+}
+.msrc {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-2);
+}
+.msrc.med {
+  color: var(--warn);
+}
+.msrc.high {
+  color: var(--danger);
+}
+.ev-detail.caution {
+  color: var(--warn);
+}
+.pkgs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.pkgs td {
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+.pkgs tr:first-child td {
+  border-top: 0;
+}
+.pk-eco {
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.pk-name {
+  font-weight: 600;
+  word-break: break-all;
+}
+.pk-fix {
+  color: var(--ok);
+  word-break: break-all;
+}
+.pk-adv {
+  white-space: nowrap;
+  font-size: 11.5px;
 }
 .evidence ul {
   margin: 0;

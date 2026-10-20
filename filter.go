@@ -10,28 +10,29 @@ import (
 
 // FilterRequest represents incoming filter parameters
 type FilterRequest struct {
-	YearFrom      *int     `json:"yearFrom"`
-	YearTo        *int     `json:"yearTo"`
-	Vendors       []string `json:"vendors"`
-	Products      []string `json:"products"`
-	Severities    []string `json:"severities"` // CRITICAL, HIGH, MEDIUM, LOW, NONE
-	AttackVectors []string `json:"attackVectors"`
-	Search        string   `json:"search"`
-	CWE           string   `json:"cwe"`
-	ScoreMin      *float64 `json:"scoreMin"`
-	ScoreMax      *float64 `json:"scoreMax"`
-	EPSSMin       *float64 `json:"epssMin"` // 0..1
-	PublicExploit bool     `json:"publicExploit"`
-	InKEV         *bool    `json:"inKEV"`
-	Ransomware    bool     `json:"ransomware"`   // Only KEV entries with known ransomware use
-	KEVAddedDays  int      `json:"kevAddedDays"` // Only KEV entries added within the last N days
-	KEVDue        string   `json:"kevDue"`       // "overdue", or N = due within the next N days
-	ChangedSince  string   `json:"changedSince"` // Published or added to KEV at/after this time (RFC 3339 or date)
-	SortBy        string   `json:"sortBy"`
-	SortDesc      bool     `json:"sortDesc"`
-	Page          int      `json:"page"`
-	PageSize      int      `json:"pageSize"`
-	CountOnly     bool     `json:"countOnly"`
+	YearFrom       *int     `json:"yearFrom"`
+	YearTo         *int     `json:"yearTo"`
+	Vendors        []string `json:"vendors"`
+	Products       []string `json:"products"`
+	Severities     []string `json:"severities"` // CRITICAL, HIGH, MEDIUM, LOW, NONE
+	AttackVectors  []string `json:"attackVectors"`
+	Search         string   `json:"search"`
+	CWE            string   `json:"cwe"`
+	ScoreMin       *float64 `json:"scoreMin"`
+	ScoreMax       *float64 `json:"scoreMax"`
+	EPSSMin        *float64 `json:"epssMin"` // 0..1
+	PublicExploit  bool     `json:"publicExploit"`
+	ExploitSources []string `json:"exploitSources"` // any of: metasploit, exploitdb, nuclei, github, cisa, euvd, msrc, other
+	InKEV          *bool    `json:"inKEV"`
+	Ransomware     bool     `json:"ransomware"`   // Only KEV entries with known ransomware use
+	KEVAddedDays   int      `json:"kevAddedDays"` // Only KEV entries added within the last N days
+	KEVDue         string   `json:"kevDue"`       // "overdue", or N = due within the next N days
+	ChangedSince   string   `json:"changedSince"` // Published or added to KEV at/after this time (RFC 3339 or date)
+	SortBy         string   `json:"sortBy"`
+	SortDesc       bool     `json:"sortDesc"`
+	Page           int      `json:"page"`
+	PageSize       int      `json:"pageSize"`
+	CountOnly      bool     `json:"countOnly"`
 }
 
 // CVESummary is the slim row representation returned by list queries
@@ -53,6 +54,8 @@ type CVESummary struct {
 	EPSS           float64   `json:"epss"`
 	EPSSPercentile float64   `json:"epssPercentile"`
 	PublicExploit  bool      `json:"publicExploit"`
+	ExploitSources []string  `json:"exploitSources,omitempty"`
+	ScoreSource    string    `json:"scoreSource,omitempty"`
 	InKEV          bool      `json:"inKEV"`
 	KEVName        string    `json:"kevName,omitempty"`
 	KEVDateAdded   string    `json:"kevDateAdded,omitempty"`
@@ -82,6 +85,8 @@ type Facets struct {
 	KEV          int            `json:"kev"`
 	Ransomware   int            `json:"ransomware"`
 	Exploit      int            `json:"exploit"`
+	// Per exploit-evidence source, disjunctive with the exploit filters
+	ExploitSources map[string]int `json:"exploitSources"`
 }
 
 // YearCount represents CVE count for a specific year with severity breakdown
@@ -121,6 +126,7 @@ type compiledFilter struct {
 	severities    map[string]bool
 	attackVectors map[string]bool
 	cwe           string
+	evidenceMask  uint8
 	kevSince      string
 	dueFrom       string
 	dueTo         string
@@ -195,6 +201,13 @@ func compileFilter(ds *Dataset, req FilterRequest) *compiledFilter {
 		f.severities = make(map[string]bool)
 		for _, s := range req.Severities {
 			f.severities[strings.ToUpper(s)] = true
+		}
+	}
+	for _, name := range req.ExploitSources {
+		for _, s := range evidenceSourceNames {
+			if s.Name == name {
+				f.evidenceMask |= s.Bit
+			}
 		}
 	}
 	if len(req.AttackVectors) > 0 {
@@ -389,7 +402,7 @@ func (ds *Dataset) failedGroups(i int, f *compiledFilter) int {
 	if req.EPSSMin != nil && cve.EPSS < *req.EPSSMin {
 		failed |= gEPSS
 	}
-	if req.PublicExploit && !cve.PublicExploit {
+	if (req.PublicExploit && !cve.PublicExploit) || (f.evidenceMask != 0 && cve.EvidenceBits&f.evidenceMask == 0) {
 		failed |= gExploit
 	}
 	if (req.InKEV != nil && *req.InKEV != cve.InKEV) ||
@@ -415,7 +428,7 @@ func (ds *Dataset) filterCVEs(f *compiledFilter, withFacets bool) ([]int, *Filte
 	matches := make([]int, 0, 1024)
 
 	resp := &FilterResponse{
-		Facets: Facets{Severity: map[string]int{}, AttackVector: map[string]int{}},
+		Facets: Facets{Severity: map[string]int{}, AttackVector: map[string]int{}, ExploitSources: map[string]int{}},
 	}
 	years := map[int]*YearCount{}
 	kevMonths := map[string]int{}
@@ -450,8 +463,13 @@ func (ds *Dataset) filterCVEs(f *compiledFilter, withFacets bool) ([]int, *Filte
 				resp.Facets.Ransomware++
 			}
 		}
-		if failed&^gExploit == 0 && cve.PublicExploit {
+		if failed&^gExploit == 0 && cve.EvidenceBits != 0 {
 			resp.Facets.Exploit++
+			for _, s := range evidenceSourceNames {
+				if cve.EvidenceBits&s.Bit != 0 {
+					resp.Facets.ExploitSources[s.Name]++
+				}
+			}
 		}
 		if failed&^gYear == 0 && cve.Year > 0 {
 			yc := years[cve.Year]
@@ -503,6 +521,10 @@ func (ds *Dataset) filterCVEs(f *compiledFilter, withFacets bool) ([]int, *Filte
 func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 	cve := &ds.CVEs[i]
 	vendor, product := cve.Vendor, cve.Product
+	// Records that only say "n/a" borrow NVD's CPE vendor/product
+	if isPlaceholderName(vendor) && len(cve.NVDProducts) > 0 {
+		vendor, product = cve.NVDProducts[0].Vendor, cve.NVDProducts[0].Product
+	}
 	if f != nil && (len(f.vendors) > 0 || len(f.products) > 0 || len(f.textVendors) > 0) {
 		for _, ap := range cve.AffectedProducts {
 			vk, pk := normalizeVendor(ap.Vendor), normalizeProduct(ap.Product)
@@ -538,6 +560,8 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 		EPSS:           cve.EPSS,
 		EPSSPercentile: cve.EPSSPercentile,
 		PublicExploit:  cve.PublicExploit,
+		ExploitSources: evidenceNames(cve.EvidenceBits),
+		ScoreSource:    cve.ScoreSource,
 		InKEV:          cve.InKEV,
 		KEVName:        cve.KEVVulnerabilityName,
 		KEVDateAdded:   cve.KEVDateAdded,
