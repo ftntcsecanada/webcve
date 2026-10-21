@@ -195,9 +195,12 @@ func TestDownloadResumes(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// The app saves its state file relative to the working directory
+	dir := t.TempDir()
+	t.Chdir(dir)
 	app := newApp()
 	app.loadState()
-	path := filepath.Join(t.TempDir(), "feed.bin")
+	path := filepath.Join(dir, "feed.bin")
 	if _, err := app.downloadIfChanged(srv.URL, path); err == nil {
 		t.Fatal("expected the first, interrupted download to fail")
 	}

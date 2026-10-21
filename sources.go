@@ -183,6 +183,8 @@ func (app *App) downloadIfChanged(url, path string) (bool, error) {
 	delete(app.partialETags, url)
 	if tag := resp.Header.Get("ETag"); tag != "" {
 		app.state.ETags[url] = tag
+		// Persist right away so an interrupted multi-file sync doesn't refetch finished files
+		app.saveState()
 	}
 	app.updateMu.Unlock()
 	return true, nil
