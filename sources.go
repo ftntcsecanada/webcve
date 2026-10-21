@@ -840,23 +840,36 @@ func fetchNVD(app *App) (bool, error) {
 		header["apiKey"] = key
 	}
 	updated := 0
+	pageSize, streak := nvdPage, 0
+	lastSaved := resume
+	saveProgress := func(index int) {
+		app.updateMu.Lock()
+		app.state.NVDResume = index
+		app.saveState()
+		app.updateMu.Unlock()
+		saveNVDStore()
+		lastSaved = index
+	}
 	for index := resume; ; {
 		var page nvdResponse
-		url := fmt.Sprintf("%s?resultsPerPage=%d&startIndex=%d%s", nvdAPI, nvdPage, index, query)
 		var err error
-		for attempt := 0; attempt < 4; attempt++ {
-			if err = app.getJSON(url, &page, header); err == nil {
+		// NVD can take minutes to build a large page and sometimes stalls; on
+		// failure, wait and retry with a smaller page, growing back after successes
+		for attempt := 1; attempt <= 6; attempt++ {
+			url := fmt.Sprintf("%s?resultsPerPage=%d&startIndex=%d%s", nvdAPI, pageSize, index, query)
+			app.board.progress("nvd", fmt.Sprintf("requesting records %d–%d%s", index, index+pageSize, nvdProgressSuffix(full, page.TotalResults, attempt)))
+			if err = app.getNVD(url, &page, header); err == nil {
 				break
 			}
-			time.Sleep(time.Duration(30*(attempt+1)) * time.Second) // NVD answers 403/503 when throttling
+			logf("nvd: request for %d records at %d failed (attempt %d): %v", pageSize, index, attempt, err)
+			app.board.progress("nvd", fmt.Sprintf("NVD is slow or throttling; retrying in %ds with smaller pages (%v)", 20*attempt, shortErr(err)))
+			pageSize = max(250, pageSize/2)
+			streak = 0
+			time.Sleep(time.Duration(20*attempt) * time.Second)
 		}
 		if err != nil {
 			if full {
-				app.updateMu.Lock()
-				app.state.NVDResume = index
-				app.saveState()
-				app.updateMu.Unlock()
-				saveNVDStore()
+				saveProgress(index)
 			}
 			return updated > 0, err
 		}
@@ -869,18 +882,17 @@ func fetchNVD(app *App) (bool, error) {
 			updated++
 		}
 		index += len(page.Vulnerabilities)
+		if streak++; streak >= 3 && pageSize < nvdPage {
+			pageSize, streak = min(nvdPage, pageSize*2), 0
+		}
 		if full {
 			app.board.progress("nvd", fmt.Sprintf("full sync: %d of %d records", index, page.TotalResults))
+			if index-lastSaved >= 20000 {
+				saveProgress(index)
+				logf("nvd: %d / %d records", index, page.TotalResults)
+			}
 		} else {
 			app.board.progress("nvd", fmt.Sprintf("%d of %d changed records", index, page.TotalResults))
-		}
-		if full && (index/nvdPage)%10 == 0 {
-			app.updateMu.Lock()
-			app.state.NVDResume = index
-			app.saveState()
-			app.updateMu.Unlock()
-			saveNVDStore()
-			logf("nvd: %d / %d records", index, page.TotalResults)
 		}
 		if len(page.Vulnerabilities) == 0 || index >= page.TotalResults {
 			break
@@ -900,6 +912,49 @@ func fetchNVD(app *App) (bool, error) {
 		logf("nvd: %d records updated (%d total)", updated, len(nvdStore))
 	}
 	return updated > 0, nil
+}
+
+// nvdClient bounds each NVD request; NVD sometimes stalls mid-response
+var nvdClient = &http.Client{Timeout: 3 * time.Minute}
+
+func (app *App) getNVD(url string, v any, header map[string]string) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "webcve")
+	for k, val := range header {
+		req.Header.Set(k, val)
+	}
+	resp, err := nvdClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+func nvdProgressSuffix(full bool, total, attempt int) string {
+	s := ""
+	if full && total > 0 {
+		s = fmt.Sprintf(" of %d", total)
+	}
+	if attempt > 1 {
+		s += fmt.Sprintf(" (attempt %d)", attempt)
+	}
+	return s
+}
+
+// shortErr trims long transport errors for the status page
+func shortErr(err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "Client.Timeout") || strings.Contains(msg, "deadline exceeded") {
+		return "timed out"
+	}
+	return truncate(msg, 80)
 }
 
 func saveNVDStore() error {
