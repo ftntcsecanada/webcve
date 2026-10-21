@@ -199,6 +199,10 @@ async function copyText() {
   border-color: var(--accent);
   color: #fff;
 }
+.brief-overlay {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
 .page {
   max-width: 820px;
   margin: 0 auto;

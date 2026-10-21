@@ -32,3 +32,17 @@ export function groupMatching(vendors) {
   const set = new Set(vendors.map((v) => v.toLowerCase()));
   return PEER_GROUPS.find((g) => g.vendors.length === set.size && g.vendors.every((v) => set.has(v.toLowerCase())));
 }
+
+// Mirror of the server's vendor normalization, enough to match peer names
+const SUFFIXES = new Set(["corporation", "corp", "incorporated", "inc", "limited", "ltd", "llc", "gmbh", "co", "company", "plc", "ag", "sa", "networks", "systems", "technologies", "technology", "software", "labs", "lab"]);
+function vendorKey(name) {
+  const words = (name || "").toLowerCase().split(/[^a-z0-9&+]+/).filter(Boolean);
+  while (words.length > 1 && SUFFIXES.has(words[words.length - 1])) words.pop();
+  return words.join(" ");
+}
+const SHORT = new Map(PEER_GROUPS.flatMap((g) => g.vendors).map((v) => [vendorKey(v), v]));
+
+// "Check Point Software Technologies Ltd." -> "Check Point" when it's a known peer
+export function shortVendorName(name) {
+  return SHORT.get(vendorKey(name)) || name;
+}

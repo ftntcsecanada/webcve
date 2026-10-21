@@ -352,23 +352,21 @@ button {
   opacity: 1;
 }
 
-/* Briefs print on their own: hide the app, show the page */
+/* Briefs print on their own. Everything else is removed from layout (not just
+   hidden), otherwise the app's full-height layout prints as blank pages. */
 @media print {
+  html,
   body {
+    height: auto !important;
+    overflow: visible !important;
     background: #fff !important;
   }
-  body * {
-    visibility: hidden;
-  }
-  .brief-overlay,
-  .brief-overlay * {
-    visibility: visible;
+  body:has(> .brief-overlay) > *:not(.brief-overlay) {
+    display: none !important;
   }
   .brief-overlay {
-    position: absolute !important;
-    top: 0;
-    left: 0;
-    width: 100%;
+    position: static !important;
+    inset: auto !important;
     padding: 0 !important;
     overflow: visible !important;
     background: none !important;
@@ -381,6 +379,10 @@ button {
     margin: 0 !important;
     padding: 0 !important;
     border-radius: 0 !important;
+  }
+  .brief-overlay tr,
+  .brief-overlay li {
+    break-inside: avoid;
   }
   @page {
     margin: 14mm;

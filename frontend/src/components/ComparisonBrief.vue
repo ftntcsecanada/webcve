@@ -205,6 +205,10 @@ function when(t) {
   border-color: var(--accent);
   color: #fff;
 }
+.brief-overlay {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
 /* The page is always light, like paper */
 .page {
   max-width: 1000px;
@@ -279,6 +283,22 @@ h1 {
 .method,
 .sources {
   margin-top: 22px;
+}
+@media print {
+  .page {
+    font-size: 10.5px;
+  }
+  h1 {
+    font-size: 19px;
+  }
+  .t th,
+  .t td {
+    padding: 4px 6px;
+  }
+  .method,
+  .sources {
+    margin-top: 14px;
+  }
 }
 h2 {
   margin: 0 0 6px;

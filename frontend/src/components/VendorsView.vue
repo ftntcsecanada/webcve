@@ -6,7 +6,7 @@ import ComparisonBrief from "./ComparisonBrief.vue";
 import { state, vendorRequest, setView, activeFilterCount } from "../lib/store.js";
 import { fmtNum } from "../lib/format.js";
 import { explain } from "../lib/glossary.js";
-import { PEER_GROUPS, groupMatching } from "../lib/peers.js";
+import { PEER_GROUPS, groupMatching, shortVendorName } from "../lib/peers.js";
 
 const emit = defineEmits(["open"]);
 const showBrief = ref(false);
@@ -127,6 +127,12 @@ function sortBy(key) {
 function preset([key, desc]) {
   state.vendor.sort = key;
   state.vendor.desc = desc;
+}
+
+// Peer vendors show their short names; product rows keep "Vendor · Product"
+function displayName(r) {
+  if (!r.product) return shortVendorName(r.name);
+  return `${shortVendorName(r.vendor)} · ${r.product}`;
 }
 
 function openRow(r) {
@@ -286,7 +292,7 @@ function colMax(key) {
           <tbody v-if="data">
             <tr v-for="r in data.vendors" :key="r.key">
               <td class="c-vendor">
-                <button class="vname" :title="`Show ${r.name} CVEs`" @click="openRow(r)">{{ r.name }}</button>
+                <button class="vname" :title="`Show ${r.name} CVEs`" @click="openRow(r)">{{ displayName(r) }}</button>
               </td>
               <td class="num-col">
                 <div class="cell-cves">
@@ -362,9 +368,10 @@ function colMax(key) {
     </div>
     </template>
 
+    <Teleport to="body">
     <ComparisonBrief
       v-if="showBrief && data"
-      :rows="data.vendors"
+      :rows="data.vendors.map((r) => ({ ...r, name: displayName(r) }))"
       :title="briefTitle"
       :scope="briefScope"
       :group-by="state.vendor.by"
@@ -372,6 +379,7 @@ function colMax(key) {
       :year-to="data.yearTo"
       @close="showBrief = false"
     />
+    </Teleport>
   </section>
 </template>
 
