@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"compress/gzip"
 	"encoding/csv"
 	"encoding/gob"
 	"encoding/json"
@@ -790,23 +791,23 @@ func mergeFix(list []PackageFix, fix PackageFix) []PackageFix {
 }
 
 // ---- NVD ----
+//
+// NVD publishes its database as JSON 2.0 feeds: one gzip file per year
+// (refreshed weekly) and a "modified" feed covering the last 8 days (refreshed
+// every 2 hours). The feeds are far faster and more reliable than paging the
+// API, which often takes minutes per page or drops the connection.
 
 const (
-	nvdAPI     = "https://services.nvd.nist.gov/rest/json/cves/2.0"
-	nvdPath    = DataDir + "/nvd.gob"
-	nvdPage    = 2000
-	nvdMaxSpan = 119 * 24 * time.Hour // the API caps lastMod ranges at 120 days
+	nvdFeedBase  = "https://nvd.nist.gov/feeds/json/cve/2.0/"
+	nvdPath      = DataDir + "/nvd.gob"
+	nvdFeedDir   = DataDir + "/nvd"
+	nvdFirstYear = 2002
+	// The modified feed covers 8 days; past that, re-read the yearly feeds
+	nvdMaxGap = 7 * 24 * time.Hour
 )
 
 // nvdStore is owned by the NVD fetch loop; installs hand the dataset a copy
 var nvdStore map[string]*NVDInfo
-
-func nvdDelay() time.Duration {
-	if os.Getenv("NVD_API_KEY") != "" {
-		return 700 * time.Millisecond // 50 requests / 30s
-	}
-	return 6500 * time.Millisecond // 5 requests / 30s without a key
-}
 
 func fetchNVD(app *App) (bool, error) {
 	if nvdStore == nil {
@@ -817,144 +818,167 @@ func fetchNVD(app *App) (bool, error) {
 		}
 	}
 	app.updateMu.Lock()
-	watermark, resume := app.state.NVDWatermark, app.state.NVDResume
+	watermark := app.state.NVDWatermark
 	app.updateMu.Unlock()
 
-	start := time.Now().UTC()
-	full := watermark.IsZero() || time.Since(watermark) > nvdMaxSpan || len(nvdStore) == 0
-	query := ""
-	if full {
-		if resume == 0 {
-			logf("nvd: starting full sync (about %d pages)", 170)
-		} else {
-			logf("nvd: resuming full sync at record %d", resume)
-		}
-	} else {
-		from := watermark.Add(-time.Hour)
-		query = "&lastModStartDate=" + from.Format("2006-01-02T15:04:05.000Z") + "&lastModEndDate=" + start.Format("2006-01-02T15:04:05.000Z")
-		resume = 0
-	}
-
-	header := map[string]string{}
-	if key := os.Getenv("NVD_API_KEY"); key != "" {
-		header["apiKey"] = key
-	}
+	start := time.Now()
 	updated := 0
-	pageSize, streak := nvdPage, 0
-	lastSaved := resume
-	saveProgress := func(index int) {
-		app.updateMu.Lock()
-		app.state.NVDResume = index
-		app.saveState()
-		app.updateMu.Unlock()
-		saveNVDStore()
-		lastSaved = index
-	}
-	for index := resume; ; {
-		var page nvdResponse
-		var err error
-		// NVD can take minutes to build a large page and sometimes stalls; on
-		// failure, wait and retry with a smaller page, growing back after successes
-		for attempt := 1; attempt <= 6; attempt++ {
-			url := fmt.Sprintf("%s?resultsPerPage=%d&startIndex=%d%s", nvdAPI, pageSize, index, query)
-			app.board.progress("nvd", fmt.Sprintf("requesting records %d–%d%s", index, index+pageSize, nvdProgressSuffix(full, page.TotalResults, attempt)))
-			if err = app.getNVD(url, &page, header); err == nil {
-				break
-			}
-			logf("nvd: request for %d records at %d failed (attempt %d): %v", pageSize, index, attempt, err)
-			app.board.progress("nvd", fmt.Sprintf("NVD is slow or throttling; retrying in %ds with smaller pages (%v)", 20*attempt, shortErr(err)))
-			pageSize = max(250, pageSize/2)
-			streak = 0
-			time.Sleep(time.Duration(20*attempt) * time.Second)
-		}
-		if err != nil {
-			if full {
-				saveProgress(index)
-			}
-			return updated > 0, err
-		}
-		for _, v := range page.Vulnerabilities {
-			if info := v.CVE.info(); info != nil {
-				nvdStore[v.CVE.ID] = info
-			} else {
-				delete(nvdStore, v.CVE.ID)
-			}
-			updated++
-		}
-		index += len(page.Vulnerabilities)
-		if streak++; streak >= 3 && pageSize < nvdPage {
-			pageSize, streak = min(nvdPage, pageSize*2), 0
-		}
-		if full {
-			app.board.progress("nvd", fmt.Sprintf("full sync: %d of %d records", index, page.TotalResults))
-			if index-lastSaved >= 20000 {
-				saveProgress(index)
-				logf("nvd: %d / %d records", index, page.TotalResults)
-			}
+	upsert := func(c *nvdCVE) {
+		if info := c.info(); info != nil {
+			nvdStore[c.ID] = info
 		} else {
-			app.board.progress("nvd", fmt.Sprintf("%d of %d changed records", index, page.TotalResults))
+			delete(nvdStore, c.ID)
 		}
-		if len(page.Vulnerabilities) == 0 || index >= page.TotalResults {
-			break
-		}
-		time.Sleep(nvdDelay())
+		updated++
 	}
 
-	if err := saveNVDStore(); err != nil {
-		return false, err
+	if watermark.IsZero() || time.Since(watermark) > nvdMaxGap || len(nvdStore) == 0 {
+		years := time.Now().Year() - nvdFirstYear + 1
+		for n, y := 0, nvdFirstYear; y <= time.Now().Year(); n, y = n+1, y+1 {
+			app.board.progress("nvd", fmt.Sprintf("yearly feed %d (%d of %d)", y, n+1, years))
+			name := fmt.Sprintf("nvdcve-2.0-%d.json.gz", y)
+			path := filepath.Join(nvdFeedDir, name)
+			changed, err := app.downloadWithRetry("nvd", nvdFeedBase+name, path)
+			if err != nil {
+				return updated > 0, fmt.Errorf("%s: %w", name, err)
+			}
+			// Unchanged years were applied on an earlier run, unless we're starting over
+			if !changed && !watermark.IsZero() {
+				continue
+			}
+			if err := readNVDGzip(path, upsert); err != nil {
+				return updated > 0, fmt.Errorf("%s: %w", name, err)
+			}
+		}
+		logf("nvd: yearly feeds applied (%d records)", len(nvdStore))
+	}
+
+	app.board.progress("nvd", "modified feed")
+	modPath := filepath.Join(nvdFeedDir, "nvdcve-2.0-modified.json.zip")
+	changed, err := app.downloadWithRetry("nvd", nvdFeedBase+"nvdcve-2.0-modified.json.zip", modPath)
+	if err != nil {
+		return updated > 0, fmt.Errorf("modified feed: %w", err)
+	}
+	if changed || updated > 0 {
+		if err := readNVDZip(modPath, upsert); err != nil {
+			return updated > 0, fmt.Errorf("modified feed: %w", err)
+		}
+	}
+
+	if updated > 0 {
+		if err := saveNVDStore(); err != nil {
+			return false, err
+		}
+		logf("nvd: %d records applied (%d total)", updated, len(nvdStore))
 	}
 	app.updateMu.Lock()
 	app.state.NVDWatermark = start
-	app.state.NVDResume = 0
 	app.saveState()
 	app.updateMu.Unlock()
-	if updated > 0 {
-		logf("nvd: %d records updated (%d total)", updated, len(nvdStore))
-	}
 	return updated > 0, nil
 }
 
-// nvdClient bounds each NVD request; NVD sometimes stalls mid-response
-var nvdClient = &http.Client{Timeout: 3 * time.Minute}
-
-func (app *App) getNVD(url string, v any, header map[string]string) error {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return err
+// downloadWithRetry retries a conditional download; NVD's servers sometimes
+// reset connections mid-transfer
+func (app *App) downloadWithRetry(source, url, path string) (bool, error) {
+	var err error
+	for attempt := 1; attempt <= 4; attempt++ {
+		var changed bool
+		if changed, err = app.downloadIfChanged(url, path); err == nil {
+			return changed, nil
+		}
+		if attempt < 4 {
+			wait := time.Duration(15*attempt) * time.Second
+			logf("%s: %s failed (attempt %d), retrying in %s: %v", source, filepath.Base(path), attempt, wait, err)
+			app.board.progress(source, fmt.Sprintf("%s: retrying in %s (%s)", filepath.Base(path), wait, shortErr(err)))
+			time.Sleep(wait)
+		}
 	}
-	req.Header.Set("User-Agent", "webcve")
-	for k, val := range header {
-		req.Header.Set(k, val)
-	}
-	resp, err := nvdClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return json.NewDecoder(resp.Body).Decode(v)
-}
-
-func nvdProgressSuffix(full bool, total, attempt int) string {
-	s := ""
-	if full && total > 0 {
-		s = fmt.Sprintf(" of %d", total)
-	}
-	if attempt > 1 {
-		s += fmt.Sprintf(" (attempt %d)", attempt)
-	}
-	return s
+	return false, err
 }
 
 // shortErr trims long transport errors for the status page
 func shortErr(err error) string {
 	msg := err.Error()
-	if strings.Contains(msg, "Client.Timeout") || strings.Contains(msg, "deadline exceeded") {
+	switch {
+	case strings.Contains(msg, "Client.Timeout"), strings.Contains(msg, "deadline exceeded"):
 		return "timed out"
+	case strings.Contains(msg, "INTERNAL_ERROR"), strings.Contains(msg, "connection reset"):
+		return "connection reset by server"
 	}
 	return truncate(msg, 80)
+}
+
+func readNVDGzip(path string, fn func(*nvdCVE)) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(bufio.NewReader(f))
+	if err != nil {
+		return err
+	}
+	return streamNVDFeed(gz, fn)
+}
+
+func readNVDZip(path string, fn func(*nvdCVE)) error {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if !strings.HasSuffix(f.Name, ".json") {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		err = streamNVDFeed(bufio.NewReader(rc), fn)
+		rc.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// streamNVDFeed decodes the "vulnerabilities" array one record at a time, so
+// a year's feed (hundreds of MB of JSON) never sits in memory at once
+func streamNVDFeed(r io.Reader, fn func(*nvdCVE)) error {
+	dec := json.NewDecoder(r)
+	if _, err := dec.Token(); err != nil { // {
+		return err
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if key != "vulnerabilities" {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := dec.Token(); err != nil { // [
+			return err
+		}
+		for dec.More() {
+			var v struct {
+				CVE nvdCVE `json:"cve"`
+			}
+			if err := dec.Decode(&v); err != nil {
+				return err
+			}
+			fn(&v.CVE)
+		}
+		return nil
+	}
+	return fmt.Errorf("no vulnerabilities in feed")
 }
 
 func saveNVDStore() error {

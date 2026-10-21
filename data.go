@@ -84,7 +84,6 @@ type UpdateState struct {
 	Fetched      map[string]time.Time `json:"fetched"`
 	ETags        map[string]string    `json:"etags"`
 	NVDWatermark time.Time            `json:"nvdWatermark"`
-	NVDResume    int                  `json:"nvdResume"`
 }
 
 func newApp() *App {

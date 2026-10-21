@@ -45,8 +45,7 @@ ssh -i ~/claude_ssh_key claude@10.160.12.103 \
 - CISA KEV catalog and FIRST EPSS scores: every 6 hours.
 - NVD, Exploit-DB, Metasploit, Nuclei, PoC-in-GitHub, ENISA EUVD, Microsoft MSRC,
   OSV and MITRE CWE on their own schedules. Their downloads live in the `kev`
-  volume (about 450 MB, mostly OSV). The first NVD sync takes ~50 minutes and is
-  resumable; set `NVD_API_KEY` (free, from nvd.nist.gov) to make it ~10× faster.
+  volume (about 700 MB, mostly OSV and NVD's yearly feeds).
 - Per-source status, errors and sizes: the Data sources page in the UI, or
   `curl -s localhost:12095/api/sources`.
 
@@ -58,7 +57,6 @@ WEBCVE_ALERT_VENDORS=Fortinet,Microsoft,Ivanti               # default: all vend
 WEBCVE_ALERT_MIN_SCORE=9.0                                   # new non-KEV CVEs at or above this CVSS
 WEBCVE_PUBLIC_URL=https://webcve.fabriclab.ca                # links in alert messages
 GITHUB_TOKEN=...                                             # optional: higher GitHub API rate limit
-NVD_API_KEY=...                                              # optional: faster NVD sync
 ```
 
 Alerts post Slack-compatible `{"text": ...}` JSON for new KEV entries and new

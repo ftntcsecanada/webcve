@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,5 +132,28 @@ func TestVendorRows(t *testing.T) {
 	sortVendorRows(list, "kevPct", true)
 	if list[0].Key != "fortinet" {
 		t.Error("sort by KEV rate failed")
+	}
+}
+
+func TestStreamNVDFeed(t *testing.T) {
+	feed := `{"resultsPerPage":2,"format":"NVD_CVE","timestamp":"2026-10-16T03:04:33",
+	  "vulnerabilities":[
+	    {"cve":{"id":"CVE-2002-0001","vulnStatus":"Analyzed","metrics":{"cvssMetricV2":[{"type":"Primary","cvssData":{"version":"2.0","baseScore":7.5},"baseSeverity":"HIGH"}]}}},
+	    {"cve":{"id":"CVE-2002-0002","vulnStatus":"Rejected"}}
+	  ]}`
+	var got []string
+	err := streamNVDFeed(strings.NewReader(feed), func(c *nvdCVE) {
+		got = append(got, c.ID)
+		if c.ID == "CVE-2002-0001" {
+			if info := c.info(); info == nil || info.Score != 7.5 || info.Severity != "HIGH" {
+				t.Errorf("v2 metric not parsed: %+v", info)
+			}
+		}
+	})
+	if err != nil || !slices.Equal(got, []string{"CVE-2002-0001", "CVE-2002-0002"}) {
+		t.Fatalf("got %v, err %v", got, err)
+	}
+	if err := streamNVDFeed(strings.NewReader(`{"format":"NVD_CVE"}`), func(*nvdCVE) {}); err == nil {
+		t.Error("feed without vulnerabilities accepted")
 	}
 }

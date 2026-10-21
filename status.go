@@ -47,7 +47,7 @@ var sourceCatalog = []SourceInfo{
 	{Name: "epss", Label: "FIRST EPSS", Description: "Exploit Prediction Scoring System: daily probability that a CVE is exploited in the next 30 days.",
 		URL: "https://www.first.org/epss/", every: EPSSInterval, paths: []string{EPSSPath}},
 	{Name: "nvd", Label: "NIST NVD", Description: "National Vulnerability Database: NVD's own CVSS scores (used when the CVE record has none), CWE and CPE product names.",
-		URL: "https://nvd.nist.gov/developers/vulnerabilities", every: 2 * time.Hour, paths: []string{nvdPath}},
+		URL: "https://nvd.nist.gov/vuln/data-feeds", every: 2 * time.Hour, paths: []string{nvdPath, nvdFeedDir + "/*"}},
 	{Name: "exploitdb", Label: "Exploit-DB", Description: "Offensive Security's archive of public exploits, mapped to CVEs.",
 		URL: "https://www.exploit-db.com/", every: 24 * time.Hour, paths: []string{exploitDBPath}},
 	{Name: "metasploit", Label: "Metasploit modules", Description: "Rapid7 Metasploit Framework exploit and auxiliary modules that reference CVEs.",

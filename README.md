@@ -37,15 +37,15 @@ in the header) shows each source's status, last update, errors, record count and
 | [cvelistV5](https://github.com/CVEProject/cvelistV5) | CVE records | hourly deltas, weekly full |
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | known exploited, due dates, ransomware | 6 h |
 | [FIRST EPSS](https://www.first.org/epss/) | exploit likelihood (+ history on demand) | 6 h |
-| [NIST NVD](https://nvd.nist.gov/developers) | fallback CVSS, CWE, CPE products | 2 h (set `NVD_API_KEY` to sync ~10× faster) |
+| [NIST NVD](https://nvd.nist.gov/vuln/data-feeds) | fallback CVSS, CWE, CPE products | 2 h (yearly feeds, then the modified feed) |
 | [Exploit-DB](https://www.exploit-db.com/), [Metasploit](https://github.com/rapid7/metasploit-framework), [Nuclei](https://github.com/projectdiscovery/nuclei-templates), [PoC-in-GitHub](https://github.com/nomi-sec/PoC-in-GitHub) | exploit code and scanner templates | daily |
 | [ENISA EUVD](https://euvd.enisa.europa.eu/) | EU exploited list | 6 h |
 | [Microsoft MSRC](https://msrc.microsoft.com/update-guide) | exploitability ratings | 12 h |
 | [OSV](https://osv.dev/) | fixed package versions | daily |
 | [MITRE CWE](https://cwe.mitre.org/) | weakness names | weekly |
 
-The first NVD sync takes about 50 minutes without an API key; everything else is
-usable meanwhile.
+The first NVD sync downloads NVD's yearly feeds (about 230 MB) and takes a few
+minutes; everything else is usable meanwhile.
 
 Optional webhook alerts for new KEV entries and new critical CVEs from watched
 vendors are configured with `WEBCVE_ALERT_*` environment variables; see

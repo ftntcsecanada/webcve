@@ -14,7 +14,6 @@ services:
       - WEBCVE_ALERT_MIN_SCORE=${WEBCVE_ALERT_MIN_SCORE:-}
       - WEBCVE_PUBLIC_URL=${WEBCVE_PUBLIC_URL:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - NVD_API_KEY=${NVD_API_KEY:-}
     volumes:
       - /data/webcve/cves:/app/cves
       - /data/webcve/kev:/app/kev
