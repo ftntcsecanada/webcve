@@ -2,6 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -155,5 +160,55 @@ func TestStreamNVDFeed(t *testing.T) {
 	}
 	if err := streamNVDFeed(strings.NewReader(`{"format":"NVD_CVE"}`), func(*nvdCVE) {}); err == nil {
 		t.Error("feed without vulnerabilities accepted")
+	}
+}
+
+func TestDownloadResumes(t *testing.T) {
+	body := strings.Repeat("0123456789", 1000)
+	failFirst := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		if rng := r.Header.Get("Range"); rng != "" && r.Header.Get("If-Range") == `"v1"` {
+			var from int
+			fmt.Sscanf(rng, "bytes=%d-", &from)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", from, len(body)-1, len(body)))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write([]byte(body[from:]))
+			return
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		w.WriteHeader(http.StatusOK)
+		if failFirst {
+			// Send half, then drop the connection
+			failFirst = false
+			w.Write([]byte(body[:len(body)/2]))
+			w.(http.Flusher).Flush()
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	app := newApp()
+	app.loadState()
+	path := filepath.Join(t.TempDir(), "feed.bin")
+	if _, err := app.downloadIfChanged(srv.URL, path); err == nil {
+		t.Fatal("expected the first, interrupted download to fail")
+	}
+	changed, err := app.downloadIfChanged(srv.URL, path)
+	if err != nil || !changed {
+		t.Fatalf("resume failed: changed=%v err=%v", changed, err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != body {
+		t.Fatalf("resumed file is %d bytes, want %d", len(got), len(body))
+	}
+	if changed, err := app.downloadIfChanged(srv.URL, path); err != nil || changed {
+		t.Fatalf("unchanged file re-downloaded: changed=%v err=%v", changed, err)
 	}
 }

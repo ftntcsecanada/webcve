@@ -118,6 +118,7 @@ func fetchFile(url, path string) func(app *App) (bool, error) {
 func (app *App) downloadIfChanged(url, path string) (bool, error) {
 	app.updateMu.Lock()
 	etag := app.state.ETags[url]
+	partialTag := app.partialETags[url]
 	app.updateMu.Unlock()
 	if _, err := os.Stat(path); err != nil {
 		etag = "" // file missing: fetch unconditionally
@@ -131,41 +132,59 @@ func (app *App) downloadIfChanged(url, path string) (bool, error) {
 	if etag != "" {
 		req.Header.Set("If-None-Match", etag)
 	}
+	// Resume an interrupted download of the same version (If-Range falls back
+	// to a full response if the file changed meanwhile)
+	tmp := path + ".part"
+	var offset int64
+	if info, err := os.Stat(tmp); err == nil && partialTag != "" && info.Size() > 0 {
+		offset = info.Size()
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+		req.Header.Set("If-Range", partialTag)
+	}
 	resp, err := app.client.Do(req)
 	if err != nil {
 		return false, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotModified {
+
+	var out *os.File
+	switch resp.StatusCode {
+	case http.StatusNotModified:
 		return false, nil
-	}
-	if resp.StatusCode != http.StatusOK {
+	case http.StatusPartialContent:
+		if out, err = os.OpenFile(tmp, os.O_WRONLY|os.O_APPEND, 0644); err != nil {
+			return false, err
+		}
+	case http.StatusOK:
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return false, err
+		}
+		if out, err = os.Create(tmp); err != nil {
+			return false, err
+		}
+		app.updateMu.Lock()
+		app.partialETags[url] = resp.Header.Get("ETag")
+		app.updateMu.Unlock()
+	default:
 		return false, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return false, err
-	}
-	tmp := path + ".part"
-	out, err := os.Create(tmp)
-	if err != nil {
-		return false, err
 	}
 	_, err = io.Copy(out, resp.Body)
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		os.Remove(tmp)
+		// Keep the partial file so the next attempt can resume
 		return false, err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return false, err
 	}
+	app.updateMu.Lock()
+	delete(app.partialETags, url)
 	if tag := resp.Header.Get("ETag"); tag != "" {
-		app.updateMu.Lock()
 		app.state.ETags[url] = tag
-		app.updateMu.Unlock()
 	}
+	app.updateMu.Unlock()
 	return true, nil
 }
 

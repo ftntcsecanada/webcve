@@ -65,6 +65,9 @@ type App struct {
 	epssMu    sync.Mutex
 	epssCache map[string]epssCacheEntry
 
+	// ETags of downloads in progress, so a retry can resume them; guarded by updateMu
+	partialETags map[string]string
+
 	alerts *Alerter
 	client *http.Client
 	board  *statusBoard
@@ -88,10 +91,11 @@ type UpdateState struct {
 
 func newApp() *App {
 	app := &App{
-		client:    &http.Client{Timeout: 10 * time.Minute},
-		alerts:    newAlerterFromEnv(),
-		epssCache: map[string]epssCacheEntry{},
-		board:     newStatusBoard(),
+		client:       &http.Client{Timeout: 10 * time.Minute},
+		alerts:       newAlerterFromEnv(),
+		epssCache:    map[string]epssCacheEntry{},
+		partialETags: map[string]string{},
+		board:        newStatusBoard(),
 	}
 	app.status.Store("starting")
 	return app
