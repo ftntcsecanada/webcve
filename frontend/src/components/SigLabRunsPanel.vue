@@ -15,6 +15,7 @@ const detailError = ref("");
 const detailLoading = ref(false);
 const copied = ref("");
 let timer = null;
+let detailGeneration = 0;
 
 const activeStates = new Set(["queued", "running", "needs_input", "cancelling"]);
 const counts = computed(() => ({
@@ -55,6 +56,7 @@ async function load() {
 }
 
 async function loadDetail(id, showLoading = true) {
+  const current = ++detailGeneration;
   if (showLoading) detailLoading.value = true;
   try {
     const [job, stream, artifactList] = await Promise.all([
@@ -62,19 +64,34 @@ async function loadDetail(id, showLoading = true) {
       jsonFetch(`/api/siglab/jobs/${encodeURIComponent(id)}/events?after=0`),
       jsonFetch(`/api/siglab/jobs/${encodeURIComponent(id)}/artifacts`),
     ]);
+    if (current !== detailGeneration) return;
     selected.value = job;
     events.value = stream.events || [];
     artifacts.value = artifactList.artifacts || [];
     detailError.value = "";
   } catch (e) {
+    if (current !== detailGeneration) return;
     detailError.value = e.message || "Could not load run details.";
   } finally {
-    detailLoading.value = false;
+    if (current === detailGeneration) detailLoading.value = false;
   }
 }
 
 function selectJob(job) {
+  selected.value = job;
+  events.value = [];
+  artifacts.value = [];
+  detailError.value = "";
   loadDetail(job.id);
+}
+
+function closeDetail() {
+  detailGeneration++;
+  selected.value = null;
+  events.value = [];
+  artifacts.value = [];
+  detailLoading.value = false;
+  detailError.value = "";
 }
 
 async function copyValue(value, key) {
@@ -124,7 +141,7 @@ onBeforeUnmount(() => clearInterval(timer));
 
 <template>
   <div class="overlay" @mousedown.self="emit('close')">
-    <section class="panel" role="dialog" aria-label="Signature Lab runs" @keydown.esc="emit('close')">
+    <section class="panel" role="dialog" aria-label="Signature Lab runs" @keydown.esc.stop="selected ? closeDetail() : emit('close')">
       <header class="head">
         <div>
           <h2>FortiGate Signature Lab runs</h2>
@@ -169,7 +186,8 @@ onBeforeUnmount(() => clearInterval(timer));
         <div v-else class="empty">{{ error ? "No run data available." : `No ${filter === 'all' ? '' : filter + ' '}runs.` }}</div>
       </div>
 
-      <section v-if="selected || detailLoading" class="run-detail">
+      <div v-if="selected || detailLoading" class="detail-overlay" @mousedown.self="closeDetail">
+      <section class="run-detail" role="dialog" aria-modal="true" aria-label="Signature Lab run details">
         <div v-if="detailLoading && !selected" class="empty">Loading run details…</div>
         <template v-else-if="selected">
           <header class="detail-head">
@@ -177,7 +195,7 @@ onBeforeUnmount(() => clearInterval(timer));
               <div class="eyebrow">{{ selected.cve_id }} · <span class="mono">{{ selected.id }}</span></div>
               <h3>{{ selected.result?.summary || selected.error?.message || `Signature Lab ${label(selected.status)}` }}</h3>
             </div>
-            <button class="btn ghost icon" aria-label="Close run details" @click="selected = null; events = []; artifacts = []"><Icon name="x" /></button>
+            <button class="btn ghost icon" aria-label="Close run details" @click="closeDetail"><Icon name="x" /></button>
           </header>
 
           <div class="detail-meta">
@@ -245,6 +263,7 @@ onBeforeUnmount(() => clearInterval(timer));
           </div>
         </template>
       </section>
+      </div>
     </section>
   </div>
 </template>
@@ -281,7 +300,8 @@ tbody tr:hover, tbody tr.selected { background: var(--surface-hover); }
 .progress span { display: block; height: 100%; background: var(--accent); }
 .pct { color: var(--text-3); font-size: 11px; }
 .empty { padding: 48px; text-align: center; color: var(--text-3); }
-.run-detail { margin: 0 20px 20px; padding: 18px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-alt, var(--surface)); }
+.detail-overlay { position: fixed; inset: 0; z-index: 70; display: grid; place-items: start center; padding: 64px 18px; overflow-y: auto; background: #0a0c12a6; }
+.run-detail { width: min(1280px, 100%); max-height: calc(100vh - 128px); overflow-y: auto; padding: 18px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow-lg); }
 .detail-head, .signature-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
 .detail-head h3 { margin: 4px 0 0; font-size: 16px; }
 .eyebrow { color: var(--text-3); font-size: 11px; }
@@ -318,6 +338,6 @@ tbody tr:hover, tbody tr.selected { background: var(--surface-hover); }
 .event-log li:last-child { border-bottom: 0; }
 .event-log time, .event-log > li > span { color: var(--text-3); }
 .event-log p { margin: 0; }
-@media (max-width: 700px) { .overlay { padding: 12px; } .lab-state { width: 100%; margin-left: 0; } }
+@media (max-width: 700px) { .overlay { padding: 12px; } .lab-state { width: 100%; margin-left: 0; } .detail-overlay { padding: 12px; } .run-detail { max-height: calc(100vh - 24px); } }
 @media (max-width: 850px) { .detail-grid { grid-template-columns: 1fr; } .event-log li { grid-template-columns: 25px 1fr; } .event-log time { display: none; } .event-log p { grid-column: 2; } }
 </style>
