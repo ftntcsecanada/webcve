@@ -45,6 +45,14 @@ func TestSigLabProxyLifecycle(t *testing.T) {
 			if cve["id"] != "CVE-2025-32432" {
 				t.Errorf("unexpected submitted CVE: %v", cve["id"])
 			}
+			refs, ok := cve["references"].([]any)
+			if !ok || len(refs) != 1 || refs[0].(map[string]any)["url"] != "https://vendor.example/advisory" {
+				t.Errorf("CVE references were not forwarded: %#v", cve["references"])
+			}
+			exploits, ok := cve["exploit_refs"].([]any)
+			if !ok || len(exploits) != 1 || exploits[0].(map[string]any)["url"] != "https://github.com/example/poc" {
+				t.Errorf("exploit references were not forwarded: %#v", cve["exploit_refs"])
+			}
 			w.WriteHeader(http.StatusAccepted)
 			io.WriteString(w, `{"id":"job_def456","status":"queued","stage":"intake","progress":0}`)
 		default:
@@ -57,7 +65,11 @@ func TestSigLabProxyLifecycle(t *testing.T) {
 	t.Setenv("WEBCVE_SIGLAB_TOKEN", token)
 	app := newApp()
 	app.ds.Store(&Dataset{
-		CVEs: []CVE{{ID: "CVE-2025-32432", Title: "Craft CMS RCE", Description: "Fixture description"}},
+		CVEs: []CVE{{
+			ID: "CVE-2025-32432", Title: "Craft CMS RCE", Description: "Fixture description",
+			References: []Reference{{URL: "https://vendor.example/advisory", Tags: []string{"vendor-advisory"}}},
+			Exploits:   []ExploitRef{{Source: "github", Title: "PoC", URL: "https://github.com/example/poc"}},
+		}},
 		byID: map[string]int{"CVE-2025-32432": 0},
 	})
 	e := echo.New()

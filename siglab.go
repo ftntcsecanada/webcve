@@ -212,9 +212,31 @@ func (app *App) handleSigLabSubmit(c echo.Context) error {
 	if description == "" {
 		description = "WebCVE Signature Lab request for " + id
 	}
+	references := cve.References
+	if len(references) > 100 {
+		references = references[:100]
+	}
+	exploits := cve.Exploits
+	if len(exploits) > 25 {
+		exploits = exploits[:25]
+	}
 	payload := map[string]any{
 		"client_ref": fmt.Sprintf("webcve:%s:%d", id, time.Now().UnixMilli()),
-		"cve":        map[string]string{"id": id, "title": title, "description": description},
+		"cve": map[string]any{
+			"id":           id,
+			"title":        title,
+			"description":  description,
+			"references":   references,
+			"exploit_refs": exploits,
+			"affected":     cve.AffectedProducts,
+			"cwe":          map[string]string{"id": cve.CWE, "description": cve.CWEDescription},
+			"cvss": map[string]any{
+				"version":  cve.CvssVersion,
+				"score":    cve.BaseScore,
+				"severity": cve.BaseSeverity,
+				"vector":   cve.VectorString,
+			},
+		},
 		"options": map[string]any{
 			"action_preference": options.ActionPreference,
 			"analyst_notes":     options.AnalystNotes,
