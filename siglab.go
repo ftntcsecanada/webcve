@@ -17,6 +17,7 @@ import (
 )
 
 var sigLabJobID = regexp.MustCompile(`^job_[a-f0-9]+$`)
+var sigLabArtifactName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type sigLabClient struct {
 	base  string
@@ -72,6 +73,9 @@ func relaySigLab(c echo.Context, response *http.Response, err error) error {
 	contentType := response.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/json"
+	}
+	if disposition := response.Header.Get("Content-Disposition"); disposition != "" {
+		c.Response().Header().Set("Content-Disposition", disposition)
 	}
 	return c.Blob(response.StatusCode, contentType, body)
 }
@@ -155,6 +159,30 @@ func (app *App) handleSigLabEvents(c echo.Context) error {
 		after = parsed
 	}
 	path := fmt.Sprintf("/v1/jobs/%s/events?after=%d", id, after)
+	response, requestErr := newSigLabClient().request(http.MethodGet, path, nil, "")
+	return relaySigLab(c, response, requestErr)
+}
+
+func (app *App) handleSigLabArtifacts(c echo.Context) error {
+	id, err := checkedJobID(c)
+	if err != nil {
+		return err
+	}
+	response, requestErr := newSigLabClient().request(
+		http.MethodGet, "/v1/jobs/"+id+"/artifacts", nil, "")
+	return relaySigLab(c, response, requestErr)
+}
+
+func (app *App) handleSigLabArtifact(c echo.Context) error {
+	id, err := checkedJobID(c)
+	if err != nil {
+		return err
+	}
+	name := c.Param("artifact")
+	if !sigLabArtifactName.MatchString(name) {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid Signature Lab artifact name")
+	}
+	path := "/v1/jobs/" + id + "/artifacts/" + url.PathEscape(name)
 	response, requestErr := newSigLabClient().request(http.MethodGet, path, nil, "")
 	return relaySigLab(c, response, requestErr)
 }
@@ -258,6 +286,8 @@ func registerSigLabRoutes(api, data *echo.Group, app *App) {
 	api.GET("/siglab/jobs", app.handleSigLabJobs)
 	api.GET("/siglab/jobs/:jobID", app.handleSigLabJob)
 	api.GET("/siglab/jobs/:jobID/events", app.handleSigLabEvents)
+	api.GET("/siglab/jobs/:jobID/artifacts", app.handleSigLabArtifacts)
+	api.GET("/siglab/jobs/:jobID/artifacts/:artifact", app.handleSigLabArtifact)
 	api.POST("/siglab/jobs/:jobID/cancel", app.handleSigLabCancel)
 	data.POST("/cves/:id/siglab/jobs", app.handleSigLabSubmit)
 }

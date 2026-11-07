@@ -31,6 +31,12 @@ func TestSigLabProxyLifecycle(t *testing.T) {
 			io.WriteString(w, `{"id":"job_abc123","status":"running","stage":"validation","progress":0.68}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job_abc123/events":
 			io.WriteString(w, `{"events":[{"seq":1,"message":"Validation running"}]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job_abc123/artifacts":
+			io.WriteString(w, `{"artifacts":[{"name":"report.md","kind":"report","sensitive":false}]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job_abc123/artifacts/report.md":
+			w.Header().Set("Content-Type", "text/markdown")
+			w.Header().Set("Content-Disposition", `attachment; filename="report.md"`)
+			io.WriteString(w, "# report")
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs/job_abc123/cancel":
 			io.WriteString(w, `{"id":"job_abc123","status":"cancelling"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
@@ -101,6 +107,18 @@ func TestSigLabProxyLifecycle(t *testing.T) {
 	listing := assertStatus(http.MethodGet, "/api/siglab/jobs?cve_id=CVE-2025-32432", "", nil, http.StatusOK)
 	if len(listing["jobs"].([]any)) != 1 {
 		t.Fatalf("unexpected job listing: %#v", listing)
+	}
+	artifacts := assertStatus(http.MethodGet, "/api/siglab/jobs/job_abc123/artifacts", "", nil, http.StatusOK)
+	if len(artifacts["artifacts"].([]any)) != 1 {
+		t.Fatalf("unexpected artifact listing: %#v", artifacts)
+	}
+	artifactRequest := httptest.NewRequest(http.MethodGet, "/api/siglab/jobs/job_abc123/artifacts/report.md", nil)
+	artifactRecorder := httptest.NewRecorder()
+	e.ServeHTTP(artifactRecorder, artifactRequest)
+	if artifactRecorder.Code != http.StatusOK || artifactRecorder.Body.String() != "# report" ||
+		artifactRecorder.Header().Get("Content-Disposition") == "" {
+		t.Fatalf("unexpected artifact response: %d %q %#v", artifactRecorder.Code,
+			artifactRecorder.Body.String(), artifactRecorder.Header())
 	}
 	created := assertStatus(http.MethodPost, "/api/cves/CVE-2025-32432/siglab/jobs", `{}`,
 		map[string]string{"Content-Type": "application/json", "Idempotency-Key": "browser-request-1"}, http.StatusAccepted)
