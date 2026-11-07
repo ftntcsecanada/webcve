@@ -6,6 +6,9 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    environment:
+      - WEBCVE_SIGLAB_URL=${WEBCVE_SIGLAB_URL:-}
+      - WEBCVE_SIGLAB_TOKEN=${WEBCVE_SIGLAB_TOKEN:-}
     volumes:
       - /data/webcve/cves:/app/cves:ro
       - /data/webcve/kev:/app/kev:ro

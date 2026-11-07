@@ -2,6 +2,7 @@
 import { ref, watch, computed } from "vue";
 import Icon from "./Icon.vue";
 import CveBrief from "./CveBrief.vue";
+import SigLabPanel from "./SigLabPanel.vue";
 import { state, fetchCve, fetchRelated, addUnique } from "../lib/store.js";
 import {
   SEVERITY_LABEL,
@@ -246,6 +247,8 @@ const riskLabel = ["", "low", "med", "high"];
           <Icon name="alert" :size="14" /> CISA lists this CVE as exploited, but its record hasn't reached the CVE list this server mirrors yet.
           Details below come from the KEV catalog and fill in automatically when the record arrives.
         </p>
+
+        <SigLabPanel :cve="cve" />
 
         <!-- Risk signals -->
         <section class="signals">

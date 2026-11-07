@@ -57,7 +57,15 @@ WEBCVE_ALERT_VENDORS=Fortinet,Microsoft,Ivanti               # default: all vend
 WEBCVE_ALERT_MIN_SCORE=9.0                                   # new non-KEV CVEs at or above this CVSS
 WEBCVE_PUBLIC_URL=https://webcve.fabriclab.ca                # links in alert messages
 GITHUB_TOKEN=...                                             # optional: higher GitHub API rate limit
+WEBCVE_SIGLAB_URL=http://10.160.12.103:16774                 # Signature Lab API base URL
+WEBCVE_SIGLAB_TOKEN=...                                      # Signature Lab bearer token
 ```
+
+The Signature Lab token is consumed only by the WebCVE backend. Browsers use
+the `/api/siglab/*` proxy endpoints and never receive the bearer credential.
+The proxy exposes lab readiness, durable job state, event cursors, submission,
+and cancellation. After changing these values, recreate the container with
+`docker-compose up -d`.
 
 Alerts post Slack-compatible `{"text": ...}` JSON for new KEV entries and new
 high-severity CVEs from watched vendors. Restart with `docker-compose up -d`

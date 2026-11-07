@@ -6,3 +6,5 @@ kev
 settings.local.json
 claude_ssh_key
 claude_ssh_key.pub
+.env
+deploy/.env
