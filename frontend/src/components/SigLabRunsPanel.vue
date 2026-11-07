@@ -125,6 +125,33 @@ async function cancel(job) {
   }
 }
 
+async function rerun(job) {
+  if (activeStates.has(job.status)) return;
+  busy.value = job.id;
+  error.value = "";
+  try {
+    const key = `webcve-rerun-${job.cve_id.toLowerCase()}-${Date.now()}`;
+    const created = await jsonFetch(`/api/cves/${encodeURIComponent(job.cve_id)}/siglab/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+      body: JSON.stringify({
+        actionPreference: "block",
+        maxIterations: job.max_iterations || 3,
+        freshResearch: true,
+        analystNotes: `Fresh research rerun requested from Signature Lab runs. Previous job ${job.id} is historical context only and must not be reused.`,
+      }),
+    });
+    selected.value = created;
+    events.value = [];
+    artifacts.value = [];
+    await load();
+  } catch (e) {
+    error.value = e.message || "Could not rerun Signature Lab job.";
+  } finally {
+    busy.value = "";
+  }
+}
+
 function when(value) {
   return value ? new Date(value).toLocaleString() : "—";
 }
@@ -179,7 +206,13 @@ onBeforeUnmount(() => clearInterval(timer));
                 <span v-else-if="job.result">{{ label(job.result.outcome) }} · {{ job.result.summary }}</span>
                 <span v-else class="muted">{{ job.client_ref }}</span>
               </td>
-              <td><button v-if="activeStates.has(job.status)" class="btn ghost sm" :disabled="busy === job.id" @click.stop="cancel(job)">{{ busy === job.id ? "Cancelling…" : "Cancel" }}</button><button v-else class="btn ghost sm" @click.stop="selectJob(job)">View</button></td>
+              <td>
+                <button v-if="activeStates.has(job.status)" class="btn ghost sm" :disabled="busy === job.id" @click.stop="cancel(job)">{{ busy === job.id ? "Cancelling…" : "Cancel" }}</button>
+                <span v-else class="row-actions">
+                  <button class="btn ghost sm" @click.stop="selectJob(job)">View</button>
+                  <button class="btn ghost sm" :disabled="busy === job.id" @click.stop="rerun(job)">{{ busy === job.id ? "Starting…" : "Run again" }}</button>
+                </span>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -287,6 +320,7 @@ onBeforeUnmount(() => clearInterval(timer));
 .status { display: inline-flex; align-items: center; gap: 6px; text-transform: capitalize; font-weight: 600; }
 .banner { margin: 0 20px 12px; padding: 8px 12px; display: flex; gap: 8px; align-items: center; border-radius: var(--radius); color: var(--danger); background: var(--danger-soft); }
 .table-scroll { overflow-x: auto; padding: 0 8px 12px; }
+.row-actions { display: inline-flex; gap: 5px; }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 th { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; color: var(--text-3); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
