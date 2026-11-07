@@ -7,6 +7,7 @@ import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
 import VendorsView from "./components/VendorsView.vue";
+import SigLabRunsPanel from "./components/SigLabRunsPanel.vue";
 import {
   state,
   results,
@@ -68,6 +69,7 @@ watch(showChart, (v) => storageSet("webcve.chart", v ? "1" : "0"));
 const filtersOpen = ref(false);
 const showHelp = ref(false);
 const showSources = ref(new URLSearchParams(location.search).has("sources"));
+const showSigLab = ref(new URLSearchParams(location.search).has("siglab"));
 
 // ---- Search ----
 const searchEl = ref(null);
@@ -157,7 +159,8 @@ function onKey(e) {
       if (cursor.value >= 0 && results.cves[cursor.value]) openCve(results.cves[cursor.value].id);
       break;
     case "Escape":
-      if (showSources.value) showSources.value = false;
+      if (showSigLab.value) showSigLab.value = false;
+      else if (showSources.value) showSources.value = false;
       else if (showHelp.value) showHelp.value = false;
       else if (state.selectedId) closeCve();
       else if (filtersOpen.value) filtersOpen.value = false;
@@ -396,6 +399,7 @@ function closePopovers(e) {
           </button>
         </div>
         <button class="btn ghost icon help-toggle" title="Keyboard shortcuts and search syntax (?)" @click="showHelp = !showHelp"><Icon name="keyboard" /></button>
+        <button class="btn ghost icon" title="Signature Lab runs" @click="showSigLab = true"><Icon name="shield" /></button>
         <button class="btn ghost icon" :title="`Theme: ${theme}`" @click="cycleTheme"><Icon :name="themeIcon" /></button>
       </div>
     </header>
@@ -599,6 +603,7 @@ function closePopovers(e) {
     </Transition>
 
     <SourcesPanel v-if="showSources" @close="showSources = false" />
+    <SigLabRunsPanel v-if="showSigLab" @close="showSigLab = false" @open="(id) => { showSigLab = false; openCve(id); }" />
 
     <!-- Shortcuts -->
     <Transition name="fade">
