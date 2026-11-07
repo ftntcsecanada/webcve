@@ -218,6 +218,7 @@ func (app *App) handleSigLabSubmit(c echo.Context) error {
 		ActionPreference string `json:"actionPreference"`
 		AnalystNotes     string `json:"analystNotes"`
 		MaxIterations    int    `json:"maxIterations"`
+		FreshResearch    bool   `json:"freshResearch"`
 	}
 	_ = json.NewDecoder(io.LimitReader(c.Request().Body, 32<<10)).Decode(&options)
 	if options.ActionPreference != "monitor" {
@@ -270,6 +271,7 @@ func (app *App) handleSigLabSubmit(c echo.Context) error {
 			"analyst_notes":     options.AnalystNotes,
 			"max_iterations":    options.MaxIterations,
 			"allow_human_input": false,
+			"fresh_research":    options.FreshResearch,
 		},
 	}
 	body, _ := json.Marshal(payload)

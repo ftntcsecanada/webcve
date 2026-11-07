@@ -59,6 +59,10 @@ func TestSigLabProxyLifecycle(t *testing.T) {
 			if !ok || len(exploits) != 1 || exploits[0].(map[string]any)["url"] != "https://github.com/example/poc" {
 				t.Errorf("exploit references were not forwarded: %#v", cve["exploit_refs"])
 			}
+			options := body["options"].(map[string]any)
+			if options["fresh_research"] != true {
+				t.Errorf("fresh research was not forwarded: %#v", options)
+			}
 			w.WriteHeader(http.StatusAccepted)
 			io.WriteString(w, `{"id":"job_def456","status":"queued","stage":"intake","progress":0}`)
 		default:
@@ -120,7 +124,7 @@ func TestSigLabProxyLifecycle(t *testing.T) {
 		t.Fatalf("unexpected artifact response: %d %q %#v", artifactRecorder.Code,
 			artifactRecorder.Body.String(), artifactRecorder.Header())
 	}
-	created := assertStatus(http.MethodPost, "/api/cves/CVE-2025-32432/siglab/jobs", `{}`,
+	created := assertStatus(http.MethodPost, "/api/cves/CVE-2025-32432/siglab/jobs", `{"freshResearch":true}`,
 		map[string]string{"Content-Type": "application/json", "Idempotency-Key": "browser-request-1"}, http.StatusAccepted)
 	if created["status"] != "queued" {
 		t.Fatalf("unexpected created job: %#v", created)

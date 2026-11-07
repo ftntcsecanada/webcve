@@ -81,6 +81,7 @@ async function startJob() {
       body: JSON.stringify({
         actionPreference: "block",
         maxIterations: 3,
+        freshResearch: terminal.value,
         analystNotes: "Submitted from WebCVE. Require live differential and false-positive validation.",
       }),
     });
