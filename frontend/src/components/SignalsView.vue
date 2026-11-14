@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import Icon from "./Icon.vue";
 import ImpactBadge from "./ImpactBadge.vue";
 import ImpactCard from "./ImpactCard.vue";
@@ -14,11 +14,31 @@ const emit = defineEmits(["open"]);
 const KINDS = { cert: "CERTs", vendor: "Vendors", research: "Research", community: "oss-security", advisory: "GitHub advisories" };
 const RATINGS = ["severe", "high", "moderate", "low"];
 
+// Sort and filters are remembered per browser
+const PREFS_KEY = "webcve.signals.prefs";
+let saved = {};
+try {
+  saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") || {};
+} catch {}
+
 const q = ref("");
-const actionableOnly = ref(true);
-const kinds = ref([]);
-const ratings = ref([]);
-const sortBy = ref("risk");
+const actionableOnly = ref(saved.actionableOnly ?? true);
+const kinds = ref(Array.isArray(saved.kinds) ? saved.kinds : []);
+const ratings = ref(Array.isArray(saved.ratings) ? saved.ratings : []);
+const sortBy = ref(saved.sortBy === "date" ? "date" : "risk");
+
+watch(
+  [actionableOnly, kinds, ratings, sortBy],
+  () => {
+    try {
+      localStorage.setItem(
+        PREFS_KEY,
+        JSON.stringify({ actionableOnly: actionableOnly.value, kinds: kinds.value, ratings: ratings.value, sortBy: sortBy.value }),
+      );
+    } catch {}
+  },
+  { deep: true },
+);
 const open = ref(null);
 const showFeeds = ref(false);
 
@@ -81,11 +101,20 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
         <option value="date">Newest first</option>
       </select>
     </div>
-    <div class="sg-chips">
-      <button v-for="(label, k) in KINDS" :key="k" class="chip" :class="{ on: kinds.includes(k) }" @click="toggle(kinds, k)">{{ label }}</button>
-      <span class="sg-sep" />
-      <button v-for="r in RATINGS" :key="r" class="chip" :class="{ on: ratings.includes(r) }" @click="toggle(ratings, r)">{{ IMPACT_LABEL[r] }}</button>
-      <button class="chip" :class="{ on: ratings.includes('unrated') }" @click="toggle(ratings, 'unrated')">Not rated</button>
+    <div class="sg-chips" role="group" aria-label="Filter by source">
+      <span class="sg-label">Source</span>
+      <button v-for="(label, k) in KINDS" :key="k" class="chip" :class="{ on: kinds.includes(k) }" :aria-pressed="kinds.includes(k)" @click="toggle(kinds, k)">
+        {{ label }}
+      </button>
+      <button v-if="kinds.length" class="chip clear" @click="kinds = []">Any source</button>
+    </div>
+    <div class="sg-chips" role="group" aria-label="Filter by AI rating">
+      <span class="sg-label">AI rating</span>
+      <button v-for="r in RATINGS" :key="r" class="chip" :class="{ on: ratings.includes(r) }" :aria-pressed="ratings.includes(r)" @click="toggle(ratings, r)">
+        {{ IMPACT_LABEL[r] }}
+      </button>
+      <button class="chip" :class="{ on: ratings.includes('unrated') }" :aria-pressed="ratings.includes('unrated')" @click="toggle(ratings, 'unrated')">Not rated</button>
+      <button v-if="ratings.length" class="chip clear" @click="ratings = []">Any rating</button>
     </div>
 
     <div v-if="!signals.loaded" class="muted sg-empty">Loading signals…</div>
@@ -191,9 +220,27 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
 }
 .sg-search {
   flex: 1 1 240px;
+  width: auto;
   min-width: 0;
 }
+.sg-sort {
+  flex: 0 0 auto;
+  width: auto;
+}
+.sg-label {
+  min-width: 70px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.chip.clear {
+  border-style: dashed;
+}
 .sg-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -204,12 +251,6 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
-}
-.sg-sep {
-  width: 1px;
-  height: 18px;
-  background: var(--border);
-  margin: 0 4px;
 }
 .chip {
   border: 1px solid var(--border);

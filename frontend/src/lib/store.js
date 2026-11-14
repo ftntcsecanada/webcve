@@ -76,6 +76,56 @@ export const state = reactive({
   vendor: { sort: "kev", desc: true, min: 25, query: "", by: "vendor", mode: "compare", days: 90 },
 });
 
+// ---- Sort preferences ----
+// Each view remembers the sort the user last picked, per browser. A sort in
+// the URL (a shared link) still wins, but isn't saved as a preference.
+
+const SORT_KEY = "webcve.sortPrefs";
+let applyingSort = false; // set while a sort comes from the URL or a view switch
+
+function loadSortPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem(SORT_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSortPref(key, by, desc) {
+  try {
+    const prefs = loadSortPrefs();
+    prefs[key] = { by, desc };
+    localStorage.setItem(SORT_KEY, JSON.stringify(prefs));
+  } catch {
+    // Storage blocked: the default sort applies next visit
+  }
+}
+
+export function preferredSort(view) {
+  const p = loadSortPrefs()[view];
+  return p?.by ? { by: p.by, desc: !!p.desc } : { ...VIEWS[view].defaultSort };
+}
+
+function withoutSaving(fn) {
+  applyingSort = true;
+  try {
+    fn();
+  } finally {
+    applyingSort = false;
+  }
+}
+
+watch(
+  () => [state.sort.by, state.sort.desc],
+  ([by, desc]) => !applyingSort && saveSortPref(state.view, by, desc),
+  { flush: "sync" },
+);
+watch(
+  () => [state.vendor.sort, state.vendor.desc],
+  ([by, desc]) => !applyingSort && saveSortPref("vendors", by, desc),
+  { flush: "sync" },
+);
+
 export function vendorRequest() {
   return {
     ...buildRequest(state.view, state.filters),
@@ -128,7 +178,7 @@ export function resetFilters() {
 export function setView(view) {
   if (state.view === view) return;
   state.view = view;
-  state.sort = { ...VIEWS[view].defaultSort };
+  withoutSaving(() => (state.sort = preferredSort(view)));
   if (view !== "kev") {
     state.filters.ransomware = false;
     state.filters.kevDays = 0;
@@ -345,8 +395,11 @@ export function fromQuery(qs) {
   const num = (k) => (p.has(k) && !isNaN(parseFloat(p.get(k))) ? parseFloat(p.get(k)) : null);
   const view = ["kev", "early", "signals", "vendors"].includes(p.get("view")) ? p.get("view") : "all";
   if (view === "vendors") {
-    state.vendor.sort = p.get("vs") || "kev";
-    state.vendor.desc = p.get("vd") !== "asc";
+    const pref = preferredSort("vendors");
+    withoutSaving(() => {
+      state.vendor.sort = p.get("vs") || (loadSortPrefs().vendors ? pref.by : "kev");
+      state.vendor.desc = p.has("vd") ? p.get("vd") !== "asc" : loadSortPrefs().vendors ? pref.desc : true;
+    });
     state.vendor.min = parseInt(p.get("vmin")) || 25;
     state.vendor.query = p.get("vq") || "";
     state.vendor.by = p.get("vby") === "product" ? "product" : "vendor";
@@ -373,7 +426,7 @@ export function fromQuery(qs) {
   f.aiImpact = p.getAll("ai");
   f.sigAll = p.get("sa") === "1";
   f.since = p.get("since") || "";
-  const sort = p.has("sort") ? { by: p.get("sort"), desc: p.get("dir") !== "asc" } : { ...VIEWS[view].defaultSort };
+  const sort = p.has("sort") ? { by: p.get("sort"), desc: p.get("dir") !== "asc" } : preferredSort(view);
   return { view, filters: f, sort, page: num("page") || 1, cve: p.get("cve") };
 }
 
@@ -393,7 +446,7 @@ export function applyQuery(qs) {
   const q = fromQuery(qs);
   state.view = q.view;
   Object.assign(state.filters, q.filters);
-  state.sort = q.sort;
+  withoutSaving(() => (state.sort = q.sort));
   state.page = q.page;
   if (q.cve !== undefined) state.selectedId = q.cve;
 }
