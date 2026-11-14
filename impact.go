@@ -281,7 +281,7 @@ Work through these questions, using the research material provided (scanner temp
 2. Visibility: is the malicious part of the traffic visible? Cleartext protocols, and HTTPS where inspection is deployed, are. The payload inside end-to-end encrypted sessions (SSH after key exchange, including authentication; TLS without inspection; IPsec; QUIC; encrypted RDP) is not, so only flaws in the unencrypted handshake or negotiation of those protocols are detectable.
 3. Distinctiveness: is there a stable marker a signature can key on without false positives (a specific URI, endpoint or parameter, a header, a protocol field or message type, an abnormal length or value, a byte sequence)? Exploits made of ordinary-looking requests (business-logic flaws, IDOR, race conditions, authentication bypass with valid-looking requests) are hard.
 4. Existing coverage: SQL injection, XSS, command injection, path traversal, SSRF, XXE and known deserialization gadgets are often caught by generic IPS and WAF signatures already. Say whether a dedicated signature still adds value.
-5. Evidence: the detection anchor must come from concrete technical detail in the research material or CVE data: the exploit request or packet, the vulnerable endpoint, field or message, or the fix diff. Tools that only detect whether a system is vulnerable (version checks, banner or patch-level scanners, triage scripts) are not exploit detail, even when they're listed as a "PoC". Neither is an advisory that only says "specially crafted traffic". If the flaw would be network-detectable but those details aren't public yet, say what's missing.
+5. Evidence: the detection anchor must come from concrete technical detail in the research material or CVE data: the exploit request or packet, the vulnerable endpoint, field or message, or the fix diff. Tools that only detect whether a system is vulnerable (version checks, banner or patch-level scanners, triage scripts), and repositories that only restate the advisory, are not exploit detail, even when they're listed as a "PoC"; the research material says when a linked repository holds no exploit code. Neither is an advisory that only says "specially crafted traffic". If the flaw would be network-detectable but those details aren't public yet, say what's missing.
 
 network_protection is one of:
 - new_signature: exploitation is reachable and visible, the material gives a concrete anchor, and a dedicated signature is worth writing now.
@@ -333,7 +333,7 @@ var networkVerdicts = []string{"new_signature", "needs_details", "generic_covera
 
 // impactAnalysisVersion stamps deep analyses. Bump it when the prompt, schema
 // or research input change: older analyses are redone (newest-first queue).
-const impactAnalysisVersion = 3
+const impactAnalysisVersion = 4
 
 // impactInput is the CVE data given to the model, as JSON
 func impactInput(cve *CVE, now time.Time) string {

@@ -52,7 +52,13 @@ func signatureReadiness(cve *CVE) (state, reason string) {
 	for _, x := range cve.Exploits {
 		if x.Source == "github" {
 			listedGitHub++
-			if isDetectorRepo(x.Title + " " + x.Note) {
+			// An inspected repo's contents decide; until then, its description
+			if kind, ok := repoVerdict(x.URL); ok {
+				if kind != "exploit" {
+					detectors++
+					continue
+				}
+			} else if isDetectorRepo(x.Title + " " + x.Note) {
 				detectors++
 				continue
 			}
@@ -84,7 +90,7 @@ func signatureReadiness(cve *CVE) (state, reason string) {
 		return "ready", "Open source package: the fixed release shows the change."
 	}
 	if detectors > 0 {
-		return "needs_research", "Only detection or version-check tools are public, not exploit detail; a signature needs patch diffing or vendor detail."
+		return "needs_research", "The linked PoC repos hold no exploit code (advisory copies, detectors or version checks); a signature needs patch diffing or vendor detail."
 	}
 	return "needs_research", "Closed source with no public exploit or fix diff yet; a signature needs patch diffing or vendor detail."
 }

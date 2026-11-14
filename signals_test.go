@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -215,5 +217,61 @@ func TestSignalReadiness(t *testing.T) {
 	vendor.CVEs = []string{"CVE-2026-9"}
 	if st, _ := signalReadiness(vendor, ds); st != "ready" {
 		t.Error("a vendor notice naming a ready CVE should be ready")
+	}
+}
+
+// zipOf builds an in-memory codeload-style archive from placeholder files
+func zipOf(t *testing.T, files map[string]string) *zip.Reader {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	for name, body := range files {
+		f, _ := w.Create("repo-main/" + name)
+		f.Write([]byte(body))
+	}
+	w.Close()
+	r, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestClassifyRepo(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"advisory rewrite", map[string]string{"README.md": "Verification guide for the vendor advisory", "index.html": "<html>advisory table</html>"}, "no_code"},
+		{"version checker", map[string]string{"README.md": "Checks whether a host runs a vulnerable version", "check_version.py": "print('compare banner to fixed version')"}, "detector"},
+		{"exploit", map[string]string{"README.md": "PoC for the flaw", "exploit.py": "# placeholder"}, "exploit"},
+	}
+	for _, c := range cases {
+		info := &repoInfo{}
+		classifyRepo(info, zipOf(t, c.files))
+		if info.Kind != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, info.Kind, c.want)
+		}
+	}
+	info := &repoInfo{}
+	classifyRepo(info, zipOf(t, map[string]string{"util.py": "# helper", "exploit.py": "# main", "README.md": "PoC"}))
+	if info.Main != "exploit.py" {
+		t.Errorf("main file: %s", info.Main)
+	}
+}
+
+func TestInspectedRepoDecidesReadiness(t *testing.T) {
+	loadRepoChecks()
+	url := "https://github.com/someone/cve-2026-76954-guide"
+	repoMu.Lock()
+	repoChecks[url] = &repoInfo{Kind: "no_code", Checked: time.Now()}
+	repoMu.Unlock()
+	t.Cleanup(func() { repoMu.Lock(); delete(repoChecks, url); repoMu.Unlock() })
+	cve := &CVE{GitHubPoCs: 1, Exploits: []ExploitRef{{Source: "github", URL: url, Title: "someone/cve-2026-76954-guide"}}}
+	if st, _ := signatureReadiness(cve); st != "needs_research" {
+		t.Errorf("a repo with no code should not make a CVE ready: %s", st)
+	}
+	if !strings.Contains(pocRepoText(repoChecks[url]), "no exploit code") {
+		t.Error("research text should say the repo holds no exploit code")
 	}
 }

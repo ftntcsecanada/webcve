@@ -200,6 +200,7 @@ func (app *App) bootstrap() {
 	go app.loop("kev", KEVInterval, app.updateKEV)
 	go app.loop("epss", EPSSInterval, app.updateEPSS)
 	app.signals.start()
+	go app.loop("repo-checks", 30*time.Minute, app.sweepRepos)
 	go app.loop("signals", signalsInterval, app.signals.poll)
 }
 

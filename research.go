@@ -177,7 +177,13 @@ func gatherResearch(cacheID string, sources []researchDoc) []researchDoc {
 		if len(docs) >= researchMaxDocs || total >= researchMaxChars {
 			break
 		}
-		text, err := fetchResearchDoc(s)
+		var text string
+		var err error
+		if s.Kind == "poc" && repoURL.MatchString(s.URL) {
+			text = pocRepoText(checkRepo(s.URL))
+		} else {
+			text, err = fetchResearchDoc(s)
+		}
 		if err != nil || len(text) < 200 { // nothing useful: a script-rendered page or an error stub
 			continue
 		}
@@ -192,4 +198,26 @@ func gatherResearch(cacheID string, sources []researchDoc) []researchDoc {
 		logf("Research: could not cache %s: %v", cacheID, err)
 	}
 	return docs
+}
+
+// pocRepoText describes an inspected PoC repo for the model: the exploit
+// source when there is one, and plainly what it is when there isn't
+func pocRepoText(r *repoInfo) string {
+	files := strings.Join(r.Files[:min(len(r.Files), 15)], ", ")
+	switch r.Kind {
+	case "exploit":
+		t := "Repository files: " + files + "\nMain file " + r.Main + ":\n" + r.MainText
+		if r.Readme != "" {
+			t += "\nREADME excerpt:\n" + truncate(r.Readme, 1200)
+		}
+		return t
+	case "detector", "no_code":
+		what := "no exploit code: documentation, pages or images only"
+		if r.Kind == "detector" {
+			what = "a detector or version checker, not an exploit"
+		}
+		return "This linked \"PoC\" repository is " + what + ". It gives no exploit traffic to build a signature from.\nRepository files: " +
+			files + "\nREADME excerpt:\n" + truncate(r.Readme, 800)
+	}
+	return ""
 }
