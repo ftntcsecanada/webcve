@@ -89,8 +89,8 @@ that was published or added to KEV inside the window gets a rating of `severe`, 
    standouts get a reasoned assessment (rating, summary, drivers, exposure, what
    to watch for, and which Fortinet controls could cover it and what a signature
    would key on) that replaces the triage result. Standouts are CVEs that are
-   both widely deployed (P(widespread)+P(ubiquitous) of at least 0.7, or 0.9
-   when CVSS is below 9.0 or missing) and coverable (P(none) under 0.5, and not
+   critical (CVSS 9.0+, or unscored and near-ubiquitous at reach 0.9), widely
+   deployed (P(widespread)+P(ubiquitous) of at least 0.7) and coverable (P(none) under 0.5, and not
    confidently a vendor-operated cloud service), plus every Fortinet product CVE and every
    KEV-listed or actively exploited one. The prompt describes what each
    Fortinet control can see, so it doesn't depend on the model's own knowledge.
@@ -110,7 +110,7 @@ BIFROST_API_KEY=...                            # needs the kev and flgpu-openai 
 WEBCVE_AI_MODEL=flgpu-openai/qwen3.8-27b-openai  # deep-analysis model (default)
 WEBCVE_AI_TRIAGE_MODEL=kev-8b                  # default; "off" sends every candidate to deep analysis
 WEBCVE_AI_ESCALATE_AT=0.7                      # triage P(widespread)+P(ubiquitous) needed for deep analysis
-WEBCVE_AI_MIN_SCORE=9.0                        # CVSS at which the 0.7 reach bar applies
+WEBCVE_AI_MIN_SCORE=9.0                        # lowest CVSS that can get a deep analysis (KEV/exploited/Fortinet exempt)
 WEBCVE_AI_TRIAGE_MIN_SCORE=7.0                 # lowest CVSS triaged; unscored CVEs are triaged too
 WEBCVE_AI_WINDOW_DAYS=30                       # how far back to assess (the first start backfills this window)
 WEBCVE_AI_WORKERS=4                            # concurrent deep analyses

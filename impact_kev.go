@@ -41,7 +41,7 @@ const impactDefaultTriageModel = "kev-8b"
 // triageRulesVersion stamps triage records. Bump it when the triage questions,
 // input or escalation rules change: records from older rules are dropped at
 // startup and re-triaged (cheap). Deep analyses are never dropped this way.
-const triageRulesVersion = 1
+const triageRulesVersion = 2
 
 // Coverage classes, and the Fortinet controls behind each
 var coverageProducts = map[string]string{
@@ -441,8 +441,14 @@ func (c impactConfig) standout(cve *CVE, t *ImpactAssessment) bool {
 	if isFortinet(cve) {
 		return true
 	}
+	// Critical is the minimum for deep analysis. Scored CVEs below it keep their
+	// triage rating; unscored ones may yet turn out critical, so the most widely
+	// deployed get analysed now
+	if cve.BaseScore > 0 && cve.BaseScore < c.minScore {
+		return false
+	}
 	bar := c.escalateAt
-	if cve.BaseScore < c.minScore {
+	if cve.BaseScore == 0 {
 		bar = max(bar, c.escalateLow)
 	}
 	return c.coverable(t) && triageReach(t.Probabilities) >= bar

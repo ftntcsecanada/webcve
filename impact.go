@@ -34,9 +34,9 @@ import (
 //	WEBCVE_AI_MODEL               deep-analysis model, default flgpu-openai/qwen3.8-27b-openai
 //	WEBCVE_AI_TRIAGE_MODEL        triage model, default kev-8b; "off" sends every candidate to deep analysis
 //	WEBCVE_AI_ESCALATE_AT         triage P(widespread)+P(ubiquitous) that, with a coverable delivery, triggers deep analysis (default 0.7)
-//	WEBCVE_AI_MIN_SCORE           CVSS at which the normal escalation bar applies (default 9.0)
-//	WEBCVE_AI_TRIAGE_MIN_SCORE    lowest CVSS triaged (default 7.0); unscored CVEs are triaged too.
-//	                              Below WEBCVE_AI_MIN_SCORE, only near-ubiquitous products escalate.
+//	WEBCVE_AI_MIN_SCORE           lowest CVSS that can get a deep analysis (default 9.0); KEV, actively
+//	                              exploited and Fortinet CVEs are exempt, unscored ones need 0.9 reach
+//	WEBCVE_AI_TRIAGE_MIN_SCORE    lowest CVSS triaged (default 7.0); unscored CVEs are triaged too
 //	WEBCVE_AI_WINDOW_DAYS         assess CVEs published or added to KEV this recently (default 30)
 //	WEBCVE_AI_DAILY_LIMIT         optional cap on deep analyses per UTC day (default 0: no cap; the models run locally)
 //	WEBCVE_AI_WORKERS             concurrent deep analyses (default 4)
@@ -114,8 +114,9 @@ type impactConfig struct {
 	model       string
 	triageModel string // "" means no triage tier
 	escalateAt  float64
-	// Below minScore (or unscored), CVEs are triaged from triageMin up and escalate
-	// only at escalateLow reach: new CVEs often have no score, or a modest one, yet
+	// CVEs from triageMin up, and unscored ones, are triaged. Only critical ones
+	// (minScore) are escalated, plus unscored ones at escalateLow reach, since
+	// new CVEs often have no score yet
 	triageMin   float64
 	escalateLow float64
 	minScore    float64
