@@ -16,7 +16,7 @@ import (
 
 // signalRulesVersion stamps signal triage results; bump it when the signal
 // triage questions, input or escalation rules change
-const signalRulesVersion = 1
+const signalRulesVersion = 2
 
 var signalReportQuestion = map[string]any{
 	"type":         "choice",
@@ -123,7 +123,8 @@ func (h *SignalHub) triage(s *Signal) (*ImpactAssessment, decisionAnswer, error)
 		return nil, decisionAnswer{}, fmt.Errorf("decision model gave no usable answer: %s", truncate(string(raw), 200))
 	}
 	rating := "moderate"
-	if triageReach(dep.Probabilities) < 0.3 {
+	// News and general material isn't a vulnerability report, whatever it mentions
+	if triageReach(dep.Probabilities) < 0.3 || rep.Probabilities["other"] >= 0.5 {
 		rating = "low"
 	}
 	return &ImpactAssessment{
