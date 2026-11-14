@@ -27,7 +27,7 @@ import (
 // whether any Fortinet control could see exploitation. Standouts (wide reach and
 // coverable, Fortinet's own products, KEV-listed or actively exploited) then get
 // the deep analysis from a reasoning model (impact_llm.go), which replaces the triage
-// result. The daily limit applies to the deep analysis only.
+// result. An optional daily limit applies to the deep analysis only.
 //
 //	BIFROST_URL, BIFROST_API_KEY  gateway base URL and key; setting both enables assessments
 //	WEBCVE_AI_ASSESSMENTS=0       turns them off even when configured
@@ -38,13 +38,13 @@ import (
 //	WEBCVE_AI_TRIAGE_MIN_SCORE    lowest CVSS triaged (default 7.0); unscored CVEs are triaged too.
 //	                              Below WEBCVE_AI_MIN_SCORE, only near-ubiquitous products escalate.
 //	WEBCVE_AI_WINDOW_DAYS         assess CVEs published or added to KEV this recently (default 30)
-//	WEBCVE_AI_DAILY_LIMIT         cap on deep analyses per UTC day (default 200)
+//	WEBCVE_AI_DAILY_LIMIT         optional cap on deep analyses per UTC day (default 0: no cap; the models run locally)
+//	WEBCVE_AI_WORKERS             concurrent deep analyses (default 4)
 
 const (
 	ImpactPath = DataDir + "/ai-impact.json"
 
 	impactDefaultModel = "flgpu-openai/qwen3.8-27b-openai"
-	impactWorkers      = 2
 	triageWorkers      = 4
 	// A changed signal only triggers a new assessment once the last one is this old
 	impactMinReassess = 24 * time.Hour
@@ -120,13 +120,14 @@ type impactConfig struct {
 	escalateLow float64
 	minScore    float64
 	window      time.Duration
-	dailyLimit  int
+	dailyLimit  int // 0 means no cap
+	workers     int
 }
 
 func impactConfigFromEnv() impactConfig {
 	c := impactConfig{
 		model: impactDefaultModel, triageModel: impactDefaultTriageModel, escalateAt: 0.7, minScore: 9.0, triageMin: 7.0, escalateLow: 0.9,
-		window: 30 * 24 * time.Hour, dailyLimit: 200,
+		window: 30 * 24 * time.Hour, workers: 4,
 		apiKey: strings.TrimSpace(os.Getenv("BIFROST_API_KEY")),
 	}
 	if host := strings.TrimSpace(os.Getenv("BIFROST_URL")); host != "" {
@@ -165,6 +166,9 @@ func impactConfigFromEnv() impactConfig {
 	}
 	if v, err := strconv.Atoi(os.Getenv("WEBCVE_AI_WINDOW_DAYS")); err == nil && v > 0 {
 		c.window = time.Duration(v) * 24 * time.Hour
+	}
+	if v, err := strconv.Atoi(os.Getenv("WEBCVE_AI_WORKERS")); err == nil && v > 0 {
+		c.workers = v
 	}
 	if v, err := strconv.Atoi(os.Getenv("WEBCVE_AI_DAILY_LIMIT")); err == nil && v >= 0 {
 		c.dailyLimit = v
@@ -374,6 +378,7 @@ type Assessor struct {
 	// up with a backfill; guarded by mu
 	analysis     []analysisItem
 	analysisWake chan struct{}
+	analysing    map[string]time.Time // deep analyses in flight; guarded by mu
 }
 
 func newAssessor(app *App) *Assessor {
@@ -381,6 +386,7 @@ func newAssessor(app *App) *Assessor {
 		cfg:          impactConfigFromEnv(),
 		app:          app,
 		queued:       map[string]bool{},
+		analysing:    map[string]time.Time{},
 		triageQ:      make(chan string, 32768),
 		analysisWake: make(chan struct{}, 1),
 		store:        impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
@@ -414,8 +420,12 @@ func newAssessor(app *App) *Assessor {
 		if triage == "" {
 			triage = "off"
 		}
-		logf("AI impact assessments enabled (triage %s, analysis %s via Bifrost, CVSS >= %.1f, %d-day window, %d analyses/day)",
-			triage, a.cfg.model, a.cfg.minScore, int(a.cfg.window.Hours()/24), a.cfg.dailyLimit)
+		limit := "no daily cap"
+		if a.cfg.dailyLimit > 0 {
+			limit = fmt.Sprintf("%d analyses/day", a.cfg.dailyLimit)
+		}
+		logf("AI impact assessments enabled (triage %s, analysis %s x%d via Bifrost, CVSS >= %.1f, %d-day window, %s)",
+			triage, a.cfg.model, a.cfg.workers, a.cfg.triageMin, int(a.cfg.window.Hours()/24), limit)
 	}
 	return a
 }
@@ -442,7 +452,7 @@ func (a *Assessor) start() {
 		return
 	}
 	a.app.board.records("ai-impact", len(a.store.Assessments), "assessments")
-	for range impactWorkers {
+	for range a.cfg.workers {
 		go a.worker()
 	}
 	if a.cfg.triageModel != "" {
@@ -507,7 +517,7 @@ func (a *Assessor) takeBudget() bool {
 	if a.day != today {
 		a.day, a.usedDay = today, 0
 	}
-	if a.usedDay >= a.cfg.dailyLimit {
+	if a.cfg.dailyLimit > 0 && a.usedDay >= a.cfg.dailyLimit {
 		return false
 	}
 	a.usedDay++
@@ -658,8 +668,12 @@ func (a *Assessor) process(id string) {
 	a.mu.Unlock()
 
 	a.app.board.attempt("ai-impact", "assessing "+id)
+	a.mu.Lock()
+	a.analysing[id] = time.Now()
+	a.mu.Unlock()
 	result, err := a.assess(&cve)
 	a.mu.Lock()
+	delete(a.analysing, id)
 	if err != nil {
 		a.store.Failures[id] = impactFailure{At: time.Now(), Signals: impactSignals(&cve), Error: err.Error()}
 	} else {
@@ -762,4 +776,54 @@ func impactSortValue(a *ImpactAssessment) float64 {
 	}
 	conf := map[string]float64{"low": 0.1, "medium": 0.2, "high": 0.3}[a.Confidence]
 	return float64(impactRank(a.Rating)) + conf
+}
+
+// ImpactQueueStatus is the AI pipeline's queue depth, for the UI
+type ImpactQueueStatus struct {
+	Enabled          bool             `json:"enabled"`
+	TriageModel      string           `json:"triageModel,omitempty"`
+	AnalysisModel    string           `json:"analysisModel,omitempty"`
+	AwaitingTriage   int              `json:"awaitingTriage"`
+	AwaitingAnalysis int              `json:"awaitingAnalysis"`
+	Analysing        []AnalysingEntry `json:"analysing"`
+	Triaged          int              `json:"triaged"`
+	Analysed         int              `json:"analysed"`
+	BudgetUsed       int              `json:"budgetUsed"`
+	BudgetLimit      int              `json:"budgetLimit"`
+	WindowDays       int              `json:"windowDays"`
+}
+
+type AnalysingEntry struct {
+	ID    string    `json:"id"`
+	Since time.Time `json:"since"`
+}
+
+func (a *Assessor) queueStatus() ImpactQueueStatus {
+	st := ImpactQueueStatus{Enabled: a != nil && a.cfg.enabled, Analysing: []AnalysingEntry{}}
+	if !st.Enabled {
+		return st
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st.TriageModel, st.AnalysisModel = a.cfg.triageModel, a.cfg.model
+	st.AwaitingTriage = len(a.triageQ)
+	st.AwaitingAnalysis = len(a.analysis)
+	for id, t := range a.analysing {
+		st.Analysing = append(st.Analysing, AnalysingEntry{id, t})
+	}
+	slices.SortFunc(st.Analysing, func(x, y AnalysingEntry) int { return x.Since.Compare(y.Since) })
+	for _, v := range a.store.Assessments {
+		switch v.Tier {
+		case "triage":
+			st.Triaged++
+		default:
+			st.Analysed++
+		}
+	}
+	if a.day == time.Now().UTC().Format("2006-01-02") {
+		st.BudgetUsed = a.usedDay
+	}
+	st.BudgetLimit = a.cfg.dailyLimit
+	st.WindowDays = int(a.cfg.window.Hours() / 24)
+	return st
 }

@@ -24,6 +24,10 @@ func (app *App) requireData(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
+func (app *App) handleImpactStatus(c echo.Context) error {
+	return c.JSON(http.StatusOK, app.impact.queueStatus())
+}
+
 func (app *App) handleHealth(c echo.Context) error {
 	resp := map[string]any{"status": app.statusString()}
 	if ds := app.dataset(); ds != nil {

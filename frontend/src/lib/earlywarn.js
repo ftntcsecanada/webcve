@@ -14,7 +14,7 @@ export function earlySince() {
   return new Date(Date.now() - EARLY_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
 }
 
-export const early = reactive({ items: [], seen: loadSeen() });
+export const early = reactive({ items: [], seen: loadSeen(), queue: null });
 
 function loadSeen() {
   try {
@@ -61,6 +61,16 @@ async function load() {
   }
 }
 
+// AI pipeline queue depth, refreshed often while the view is open
+async function loadQueue() {
+  try {
+    const res = await fetch("/api/ai-impact/status");
+    if (res.ok) early.queue = await res.json();
+  } catch {
+    // Keep the previous numbers
+  }
+}
+
 let started = false;
 export function startEarlyWarning() {
   if (started) return;
@@ -68,9 +78,15 @@ export function startEarlyWarning() {
   load();
   // Assessments finish in the background, so also check periodically
   setInterval(load, 5 * 60 * 1000);
+  loadQueue();
+  setInterval(() => (state.view === "early" ? loadQueue() : null), 15 * 1000);
   watch(() => stats.value?.lastDataUpdate, load);
   watch(
     () => state.view,
-    (v) => v === "early" && markSeen(),
+    (v) => {
+      if (v !== "early") return;
+      markSeen();
+      loadQueue();
+    },
   );
 }

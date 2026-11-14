@@ -6,7 +6,7 @@ import ResultsTable from "./components/ResultsTable.vue";
 import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
-import { startEarlyWarning, unseen, unseenSevere } from "./lib/earlywarn.js";
+import { startEarlyWarning, unseen, unseenSevere, early } from "./lib/earlywarn.js";
 import VendorsView from "./components/VendorsView.vue";
 import SigLabRunsPanel from "./components/SigLabRunsPanel.vue";
 import {
@@ -446,6 +446,37 @@ function closePopovers(e) {
 
 
         <!-- KEV overview tiles -->
+        <!-- AI pipeline queue depth -->
+        <div v-if="state.view === 'early' && early.queue" class="ai-queue" role="status">
+          <template v-if="!early.queue.enabled">AI assessments are off.</template>
+          <template v-else>
+            <span class="aiq-dot" :class="{ busy: early.queue.awaitingTriage || early.queue.awaitingAnalysis || early.queue.analysing.length }" />
+            <span v-if="!early.queue.awaitingTriage && !early.queue.awaitingAnalysis && !early.queue.analysing.length"><b>AI pipeline idle</b></span>
+            <template v-else>
+              <span
+                ><b class="num">{{ fmtNum(early.queue.awaitingTriage) }}</b> awaiting triage
+                <span class="muted">({{ early.queue.triageModel }})</span></span
+              >
+              <span
+                ><b class="num">{{ fmtNum(early.queue.awaitingAnalysis) }}</b> awaiting deep analysis
+                <span class="muted">({{ early.queue.analysisModel }})</span></span
+              >
+              <span v-if="early.queue.analysing.length"
+                >analysing
+                <a v-for="(x, i) in early.queue.analysing" :key="x.id" href="#" class="mono" @click.prevent="openCve(x.id)"
+                  >{{ x.id }}{{ i < early.queue.analysing.length - 1 ? ", " : "" }}</a
+                ></span
+              >
+            </template>
+            <span class="muted aiq-totals"
+              >{{ fmtNum(early.queue.triaged) }} triaged · {{ fmtNum(early.queue.analysed) }} analysed · last
+              {{ early.queue.windowDays }} days<template v-if="early.queue.budgetLimit">
+                · {{ early.queue.budgetUsed }}/{{ early.queue.budgetLimit }} analyses today</template
+              ></span
+            >
+          </template>
+        </div>
+
         <section v-if="isKev && stats" class="tiles">
           <div class="tile">
             <div class="tile-label"><Term k="KEV">In catalog</Term></div>
@@ -860,6 +891,45 @@ function closePopovers(e) {
   border-radius: 999px;
   background: var(--surface-hover);
   color: var(--text-3);
+}
+.ai-queue {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px;
+  color: var(--text-2);
+}
+.ai-queue a {
+  color: inherit;
+}
+.aiq-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+.aiq-dot.busy {
+  background: var(--sev-high);
+  animation: aiq-pulse 1.6s ease-in-out infinite;
+}
+@keyframes aiq-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aiq-dot.busy {
+    animation: none;
+  }
+}
+.aiq-totals {
+  margin-left: auto;
 }
 .tab-count.ew-new {
   background: var(--sev-high);

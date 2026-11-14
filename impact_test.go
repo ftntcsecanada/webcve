@@ -589,3 +589,21 @@ func TestStoreKeepsAnalysesAndBudget(t *testing.T) {
 		t.Errorf("budget not restored: %s %d", a.day, a.usedDay)
 	}
 }
+
+func TestQueueStatus(t *testing.T) {
+	a := &Assessor{cfg: impactConfig{enabled: true, triageModel: "kev-8b", model: "m", dailyLimit: 200, window: 30 * 24 * time.Hour},
+		triageQ: make(chan string, 10), analysisWake: make(chan struct{}, 1), analysing: map[string]time.Time{"CVE-9": time.Now()},
+		store: impactStore{Assessments: map[string]*ImpactAssessment{"CVE-1": {Tier: "triage"}, "CVE-2": {Tier: "analysis"}}}}
+	a.triageQ <- "CVE-3"
+	a.enqueueAnalysis("CVE-4", 1)
+	a.day, a.usedDay = time.Now().UTC().Format("2006-01-02"), 7
+	st := a.queueStatus()
+	if st.AwaitingTriage != 1 || st.AwaitingAnalysis != 1 || len(st.Analysing) != 1 || st.Triaged != 1 || st.Analysed != 1 ||
+		st.BudgetUsed != 7 || st.BudgetLimit != 200 || st.WindowDays != 30 {
+		t.Errorf("got %+v", st)
+	}
+	var none *Assessor
+	if none.queueStatus().Enabled {
+		t.Error("nil assessor should report disabled")
+	}
+}

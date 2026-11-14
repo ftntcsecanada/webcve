@@ -113,7 +113,8 @@ WEBCVE_AI_ESCALATE_AT=0.7                      # triage P(widespread)+P(ubiquito
 WEBCVE_AI_MIN_SCORE=9.0                        # CVSS at which the 0.7 reach bar applies
 WEBCVE_AI_TRIAGE_MIN_SCORE=7.0                 # lowest CVSS triaged; unscored CVEs are triaged too
 WEBCVE_AI_WINDOW_DAYS=30                       # how far back to assess (the first start backfills this window)
-WEBCVE_AI_DAILY_LIMIT=200                      # load cap: deep analyses per UTC day (triage is uncapped)
+WEBCVE_AI_WORKERS=4                            # concurrent deep analyses
+WEBCVE_AI_DAILY_LIMIT=0                        # optional cap on deep analyses per UTC day; 0 = none (models run locally)
 WEBCVE_AI_ASSESSMENTS=0                        # turn off without removing the key
 ```
 
