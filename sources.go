@@ -44,6 +44,7 @@ func (app *App) sources() []*Source {
 		{Name: "msrc", Every: 12 * time.Hour, Fetch: fetchMSRC, Parse: parseMSRC},
 		{Name: "osv", Every: 24 * time.Hour, Fetch: fetchOSV, Parse: parseOSV},
 		{Name: "nvd", Every: 2 * time.Hour, Fetch: fetchNVD, Parse: parseNVD},
+		{Name: "fortiguard", Every: time.Hour, Fetch: fetchFortiGuard, Parse: parseFortiGuard},
 	}
 }
 

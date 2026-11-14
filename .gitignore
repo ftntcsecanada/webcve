@@ -8,3 +8,7 @@ claude_ssh_key
 claude_ssh_key.pub
 .env
 deploy/.env
+
+# Local API keys
+.fgtapi
+.fgtapi*

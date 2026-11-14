@@ -43,7 +43,9 @@ const open = ref(null);
 const showFeeds = ref(false);
 
 // Actionable: the deep analysis found a concrete network-signature anchor
-const actionable = (s) => (s.ai?.network ? s.ai.network === "new_signature" : s.readiness === "ready" && s.report !== "other" && s.ai?.tier !== "triage");
+// Actionable (decided server-side): a concrete network-signature anchor, and no FortiGuard IPS coverage yet
+const actionable = (s) => s.actionable;
+const covered = (s) => (s.linked || []).some((l) => l.covered);
 const rank = (s) => (s.ai ? { severe: 4, high: 3, moderate: 2, low: 1 }[s.ai.rating] || 0 : 0);
 
 const hiddenCount = computed(() => signals.items.filter((s) => !actionable(s)).length);
@@ -132,7 +134,8 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
             <ImpactBadge v-if="s.ai" :rating="s.ai.rating" :confidence="s.ai.confidence" compact />
             <span v-if="s.ai && !['severe', 'high'].includes(s.ai.rating)" class="badge" :class="`ai-${s.ai.rating}`">{{ IMPACT_LABEL[s.ai.rating] }}</span>
             <span v-if="!s.ai" class="badge ai-low">Not rated yet</span>
-            <span v-if="s.ai?.network" v-tip="NETWORK_TIP[s.ai.network]" class="badge" :class="`net-${s.ai.network}`" tabindex="0">{{
+            <span v-if="covered(s)" v-tip="'A CVE this item names already has a FortiGuard IPS signature'" class="badge ips-covered" tabindex="0">IPS covered</span>
+            <span v-else-if="s.ai?.network" v-tip="NETWORK_TIP[s.ai.network]" class="badge" :class="`net-${s.ai.network}`" tabindex="0">{{
               NETWORK_LABEL[s.ai.network]
             }}</span>
             <span v-else v-tip="s.readyWhy" class="badge" :class="`sig-${s.readiness}`" tabindex="0">{{ SIG_LABEL[s.readiness] }}</span>
@@ -149,6 +152,7 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
                   {{ id }}
                   <span v-if="linked(s, id).score" class="num">{{ linked(s, id).score.toFixed(1) }}</span>
                   <span v-if="linked(s, id).inKEV" class="badge kev">KEV</span>
+                  <span v-if="linked(s, id).covered" class="badge ips-covered">IPS</span>
                 </button>
                 <span v-else v-tip="'Not in the CVE data yet'" class="cve-chip mono pending">{{ id }}</span>
               </template>

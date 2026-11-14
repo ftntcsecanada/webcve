@@ -152,7 +152,7 @@ func signalReadiness(s *Signal, ds *Dataset) (state, reason string) {
 // public-detail readiness until they're redone.
 func networkActionable(cve *CVE) bool {
 	a := cve.AIImpact
-	if a == nil || a.Tier == "triage" {
+	if a == nil || a.Tier == "triage" || len(cve.FortiGuardIPS) > 0 { // covered: nothing to write
 		return false
 	}
 	if a.AnalysisVersion >= 2 {
@@ -165,7 +165,7 @@ func networkActionable(cve *CVE) bool {
 // signalActionable is the same test for a signal
 func signalActionable(s *Signal, ds *Dataset) bool {
 	a := s.AI
-	if a == nil || a.Tier == "triage" || a.Pending {
+	if a == nil || a.Tier == "triage" || a.Pending || signalCovered(s, ds) {
 		return false
 	}
 	if a.AnalysisVersion >= 2 {
@@ -173,4 +173,17 @@ func signalActionable(s *Signal, ds *Dataset) bool {
 	}
 	st, _ := signalReadiness(s, ds)
 	return st == "ready" && s.Report != "other"
+}
+
+// signalCovered reports whether a CVE the signal names already has a FortiGuard IPS signature
+func signalCovered(s *Signal, ds *Dataset) bool {
+	if ds == nil {
+		return false
+	}
+	for _, id := range s.CVEs {
+		if i, ok := ds.byID[id]; ok && len(ds.CVEs[i].FortiGuardIPS) > 0 {
+			return true
+		}
+	}
+	return false
 }

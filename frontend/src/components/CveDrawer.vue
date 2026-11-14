@@ -251,6 +251,21 @@ const riskLabel = ["", "low", "med", "high"];
           Details below come from the KEV catalog and fill in automatically when the record arrives.
         </p>
 
+        <section v-if="cve.fortiguardIps?.length" class="ips-card" aria-label="FortiGuard IPS coverage">
+          <div class="ips-head">
+            <span class="badge ips-covered"><Icon name="shield" :size="12" />FortiGuard IPS coverage</span>
+            <span class="muted">{{ cve.fortiguardIps.length }} signature{{ cve.fortiguardIps.length === 1 ? "" : "s" }} reference this CVE</span>
+          </div>
+          <ul>
+            <li v-for="r in cve.fortiguardIps" :key="r.ruleId">
+              <a :href="`https://www.fortiguard.com/encyclopedia/ips/${r.ruleId}`" target="_blank" rel="noopener noreferrer" class="mono">{{ r.name }}</a>
+              <span class="muted">
+                · rule {{ r.ruleId }} · {{ r.severity }} · default action <b :class="{ warnText: r.action !== 'block' }">{{ r.action }}</b
+                ><template v-if="r.date"> · released {{ r.date }}</template></span
+              >
+            </li>
+          </ul>
+        </section>
         <ImpactCard v-if="cve.aiImpact" :assessment="cve.aiImpact" />
 
         <SigLabPanel :cve="cve" />
@@ -1260,5 +1275,31 @@ h4 .count {
 }
 .ext-links a:hover {
   text-decoration: none;
+}
+.ips-card {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--border));
+  background: color-mix(in srgb, var(--ok) 6%, var(--surface));
+  font-size: 13px;
+}
+.ips-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ips-card ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+.ips-card a {
+  overflow-wrap: anywhere;
+}
+.warnText {
+  color: var(--warn);
 }
 </style>

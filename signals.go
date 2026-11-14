@@ -498,12 +498,13 @@ func (h *SignalHub) fetchGHSA(f signalFeed) ([]*Signal, error) {
 // SignalView is a signal as the UI sees it
 type SignalView struct {
 	*Signal
-	FeedLabel string      `json:"feedLabel"`
-	FeedKind  string      `json:"feedKind"`
-	Linked    []linkedCVE `json:"linked,omitempty"`
-	Readiness string      `json:"readiness"`
-	ReadyWhy  string      `json:"readyWhy"`
-	AlsoIn    []string    `json:"alsoIn,omitempty"` // other feeds reporting the same CVEs
+	FeedLabel  string      `json:"feedLabel"`
+	FeedKind   string      `json:"feedKind"`
+	Linked     []linkedCVE `json:"linked,omitempty"`
+	Readiness  string      `json:"readiness"`
+	ReadyWhy   string      `json:"readyWhy"`
+	Actionable bool        `json:"actionable"`
+	AlsoIn     []string    `json:"alsoIn,omitempty"` // other feeds reporting the same CVEs
 }
 
 type linkedCVE struct {
@@ -511,6 +512,7 @@ type linkedCVE struct {
 	Score    float64 `json:"score"`
 	InKEV    bool    `json:"inKEV"`
 	AIImpact string  `json:"aiImpact,omitempty"`
+	Covered  bool    `json:"covered,omitempty"` // a FortiGuard IPS signature exists
 }
 
 func (h *SignalHub) views() []SignalView {
@@ -543,7 +545,7 @@ func (h *SignalHub) views() []SignalView {
 			if ds != nil {
 				if i, ok := ds.byID[id]; ok {
 					c := &ds.CVEs[i]
-					l := linkedCVE{ID: id, Score: c.BaseScore, InKEV: c.InKEV}
+					l := linkedCVE{ID: id, Score: c.BaseScore, InKEV: c.InKEV, Covered: len(c.FortiGuardIPS) > 0}
 					if c.AIImpact != nil {
 						l.AIImpact = c.AIImpact.Rating
 					}
@@ -558,6 +560,7 @@ func (h *SignalHub) views() []SignalView {
 		}
 		slices.Sort(v.AlsoIn)
 		v.Readiness, v.ReadyWhy = signalReadiness(s, ds)
+		v.Actionable = signalActionable(s, ds)
 		// Pending standouts show without a rating until their analysis lands
 		if v.AI != nil && v.AI.Pending {
 			v.AI = nil

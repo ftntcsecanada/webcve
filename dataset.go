@@ -48,6 +48,7 @@ type Option struct {
 // Enrichment is the non-CVE data a dataset is built with
 type Enrichment struct {
 	KEV            map[string]*KEVEntry
+	FortiGuardIPS  map[string][]IPSRuleRef
 	KEVCatalogDate string
 	EPSS           map[string]EPSSScore
 	EPSSDate       string
@@ -161,6 +162,7 @@ func applyEnrichment(cve *CVE, enr *Enrichment) {
 		cve.EUVDID, cve.EUVDExploitedSince = e.EUVD, e.Since
 	}
 	cve.MSRC = enr.MSRC[cve.ID]
+	cve.FortiGuardIPS = enr.FortiGuardIPS[cve.ID]
 
 	cve.CWEName = enr.CWENames[cve.CWE]
 	cve.AIImpact = enr.AIImpact[cve.ID]

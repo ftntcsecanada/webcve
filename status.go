@@ -64,6 +64,8 @@ var sourceCatalog = []SourceInfo{
 		URL: "https://osv.dev/", every: 24 * time.Hour, paths: []string{osvDir + "/*.zip"}},
 	{Name: "ai-impact", Label: "AI impact assessments", Description: "Early-warning judgment, by an AI model on the private Bifrost gateway, of whether each new critical CVE is likely to cause heavy global impact. Runs when a critical CVE is published or added to KEV, and again when its threat signals change.",
 		every: DeltaInterval, paths: []string{ImpactPath}},
+	{Name: "fortiguard", Label: "FortiGuard IPS coverage", Description: "The FortiGuard IPS signature list from a FortiGate's REST API, keyed by the CVEs each signature references. A covered CVE isn't a signature job.",
+		URL: "https://www.fortiguard.com/encyclopedia", every: time.Hour, paths: []string{fortiguardPath}},
 	{Name: "signals", Label: "Early-warning signals", Description: "Items from government CERTs (CISA, CCCS, NCSC UK, CERT-EU, JPCERT/CC, CERT/CC), vendor PSIRTs (Cisco, Palo Alto, Ivanti), the oss-security list, GitHub security advisories and exploitation research blogs. Many come before a CVE is published or enriched. Each is triaged by AI; standouts get a deep analysis.",
 		every: signalsInterval, paths: []string{SignalsPath}},
 	{Name: "cwe", Label: "MITRE CWE", Description: "Common Weakness Enumeration catalog, for weakness names.",

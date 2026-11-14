@@ -27,6 +27,9 @@ services:
       - WEBCVE_AI_WINDOW_DAYS=${WEBCVE_AI_WINDOW_DAYS:-}
       - WEBCVE_AI_DAILY_LIMIT=${WEBCVE_AI_DAILY_LIMIT:-}
       - WEBCVE_AI_WORKERS=${WEBCVE_AI_WORKERS:-}
+      - FGT_URL=${FGT_URL:-}
+      - FGT_API_KEY=${FGT_API_KEY:-}
+      - FGT_VERIFY_TLS=${FGT_VERIFY_TLS:-}
     volumes:
       - /data/webcve/cves:/app/cves
       - /data/webcve/kev:/app/kev

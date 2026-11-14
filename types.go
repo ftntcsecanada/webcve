@@ -96,9 +96,11 @@ type CVE struct {
 	EUVDID             string `json:"euvdId,omitempty"`
 	EUVDExploitedSince string `json:"euvdExploitedSince,omitempty"`
 	// Microsoft Security Response Center exploitability assessment
-	MSRC       *MSRCInfo `json:"msrc,omitempty"`
-	CWEName    string    `json:"cweName,omitempty"`
-	CWEFromNVD bool      `json:"cweFromNvd,omitempty"`
+	MSRC *MSRCInfo `json:"msrc,omitempty"`
+	// FortiGuardIPS lists FortiGuard IPS signatures that already reference this CVE
+	FortiGuardIPS []IPSRuleRef `json:"fortiguardIps,omitempty"`
+	CWEName       string       `json:"cweName,omitempty"`
+	CWEFromNVD    bool         `json:"cweFromNvd,omitempty"`
 	// AI early-warning assessment of global impact, for critical CVEs
 	AIImpact *ImpactAssessment `json:"aiImpact,omitempty"`
 

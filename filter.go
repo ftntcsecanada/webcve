@@ -68,6 +68,7 @@ type CVESummary struct {
 	SigReason      string    `json:"sigReason,omitempty"`
 	Network        string    `json:"network,omitempty"` // deep analysis network-protection verdict
 	Actionable     bool      `json:"actionable,omitempty"`
+	IPSRules       []string  `json:"ipsRules,omitempty"` // FortiGuard IPS signatures covering it
 	AIConfidence   string    `json:"aiConfidence,omitempty"`
 	AISummary      string    `json:"aiSummary,omitempty"`
 }
@@ -604,6 +605,9 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 		// Readiness matters for what the AI flags; elsewhere it's noise
 		s.SigReadiness, s.SigReason = signatureReadiness(cve)
 		s.Network, s.Actionable = cve.AIImpact.Network, networkActionable(cve)
+	}
+	for _, r := range cve.FortiGuardIPS {
+		s.IPSRules = append(s.IPSRules, r.Name)
 	}
 	return s
 }

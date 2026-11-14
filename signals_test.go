@@ -275,3 +275,22 @@ func TestInspectedRepoDecidesReadiness(t *testing.T) {
 		t.Error("research text should say the repo holds no exploit code")
 	}
 }
+
+func TestIPSCVEID(t *testing.T) {
+	for v, want := range map[int64]string{20074387: "CVE-2007-4387", 202336457: "CVE-2023-36457", 2026109618: "CVE-2026-109618", 12345: "", 30001234: ""} {
+		if got := ipsCVEID(v); got != want {
+			t.Errorf("%d: got %q, want %q", v, got, want)
+		}
+	}
+}
+
+func TestCoveredIsNotActionable(t *testing.T) {
+	cve := &CVE{AIImpact: &ImpactAssessment{Tier: "analysis", Rating: "severe", AnalysisVersion: impactAnalysisVersion, Network: "new_signature"}}
+	if !networkActionable(cve) {
+		t.Fatal("uncovered new_signature should be actionable")
+	}
+	cve.FortiGuardIPS = []IPSRuleRef{{Name: "PHP.longjmp.Remote.Code.Execution"}}
+	if networkActionable(cve) {
+		t.Error("a CVE FortiGuard already covers isn't a signature job")
+	}
+}

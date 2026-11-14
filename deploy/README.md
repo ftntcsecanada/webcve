@@ -154,6 +154,23 @@ Signature readiness (ready / needs research / not feasible, from public exploit
 material and open source fixes) remains as a fallback for analyses that predate
 the network verdict.
 
+### FortiGuard IPS coverage
+
+With `FGT_URL` and `FGT_API_KEY` set, the app asks that FortiGate hourly for
+its IPS database version and, when it changes, downloads the full built-in
+signature list (`GET /api/v2/cmdb/ips/rule`, about 22,000 rules, 9 MB). Rule
+metadata 13 holds the CVE as a number, year then sequence (`20074387` is
+CVE-2007-4387). A CVE with a signature is tagged **IPS covered** in the tables,
+lists its rules (name, rule ID, severity, default action, release date) in the
+drawer, and is not actionable: the Early warning and Signals views, counters
+and alerts skip it. Certificate verification is off by default since
+FortiGates usually self-sign; `FGT_VERIFY_TLS=1` turns it on.
+
+```sh
+FGT_URL=https://10.162.7.100
+FGT_API_KEY=...        # REST API token with read access to IPS
+```
+
 ### Signals
 
 The Signals view collects early-warning items that aren't tied to a CVE record

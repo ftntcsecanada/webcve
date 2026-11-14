@@ -159,8 +159,11 @@ watch(
             <a class="id mono" :href="`?cve=${cve.id}`" @click.prevent>{{ cve.id }}</a>
             <div class="id-badges">
               <ImpactBadge :rating="cve.aiImpact" :confidence="cve.aiConfidence" compact />
+              <span v-if="cve.ipsRules?.length" v-tip="`FortiGuard IPS: ${cve.ipsRules.join(', ')}`" class="badge ips-covered" tabindex="0">
+                <Icon name="shield" :size="11" />IPS covered
+              </span>
               <span
-                v-if="cve.network && IMPACT_ELEVATED.includes(cve.aiImpact)"
+                v-else-if="cve.network && IMPACT_ELEVATED.includes(cve.aiImpact)"
                 v-tip="NETWORK_TIP[cve.network]"
                 class="badge"
                 :class="`net-${cve.network}`"
