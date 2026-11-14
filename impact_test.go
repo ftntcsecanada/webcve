@@ -549,3 +549,20 @@ func TestSnapshotHidesPendingTriage(t *testing.T) {
 		t.Errorf("snapshot: %v", snap)
 	}
 }
+
+func TestAnalysisQueueOrder(t *testing.T) {
+	a := &Assessor{analysisWake: make(chan struct{}, 1)}
+	reach := func(r float64) *ImpactAssessment {
+		return &ImpactAssessment{Tier: "triage", Probabilities: map[string]float64{"ubiquitous": r}}
+	}
+	a.enqueueAnalysis("niche", analysisPriority(&CVE{BaseScore: 9.8}, reach(0.7)))
+	a.enqueueAnalysis("kev", analysisPriority(&CVE{BaseScore: 7.5, InKEV: true}, reach(0.3)))
+	a.enqueueAnalysis("broad", analysisPriority(&CVE{BaseScore: 9.1}, reach(0.99)))
+	var got []string
+	for range 3 {
+		got = append(got, a.nextAnalysis())
+	}
+	if !slices.Equal(got, []string{"kev", "broad", "niche"}) {
+		t.Errorf("order: %v", got)
+	}
+}

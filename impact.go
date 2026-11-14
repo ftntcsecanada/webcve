@@ -361,18 +361,21 @@ type Assessor struct {
 	day     string
 	usedDay int
 
-	triageQ   chan string
-	analysisQ chan string
+	triageQ chan string
+	// Deep analyses wait here, best first, because the daily limit can't keep
+	// up with a backfill; guarded by mu
+	analysis     []analysisItem
+	analysisWake chan struct{}
 }
 
 func newAssessor(app *App) *Assessor {
 	a := &Assessor{
-		cfg:       impactConfigFromEnv(),
-		app:       app,
-		queued:    map[string]bool{},
-		triageQ:   make(chan string, 8192),
-		analysisQ: make(chan string, 8192),
-		store:     impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
+		cfg:          impactConfigFromEnv(),
+		app:          app,
+		queued:       map[string]bool{},
+		triageQ:      make(chan string, 32768),
+		analysisWake: make(chan struct{}, 1),
+		store:        impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
 	}
 	if data, err := os.ReadFile(ImpactPath); err == nil {
 		if err := json.Unmarshal(data, &a.store); err != nil {
@@ -454,12 +457,15 @@ func (a *Assessor) scan(ds *Dataset) {
 	added := 0
 	for _, i := range due {
 		id := ds.CVEs[i].ID
-		q := a.triageQ
-		if a.cfg.needsAnalysis(a.store.Assessments[id]) {
-			q = a.analysisQ
+		if prev := a.store.Assessments[id]; a.cfg.needsAnalysis(prev) {
+			a.analysis = append(a.analysis, analysisItem{id, analysisPriority(&ds.CVEs[i], prev)})
+			a.queued[id] = true
+			added++
+			a.wakeAnalysis()
+			continue
 		}
 		select {
-		case q <- id:
+		case a.triageQ <- id:
 			a.queued[id] = true
 			added++
 		default:
@@ -488,8 +494,70 @@ func (a *Assessor) takeBudget() bool {
 	return true
 }
 
+type analysisItem struct {
+	id   string
+	prio float64
+}
+
+// analysisPriority orders deep analyses: known exploitation first, then the
+// widest reach (from triage), then CVSS
+func analysisPriority(cve *CVE, triage *ImpactAssessment) float64 {
+	p := cve.BaseScore
+	if triage != nil && triage.Tier == "triage" {
+		p += 100 * triageReach(triage.Probabilities)
+	} else {
+		p += 50
+	}
+	if cve.InKEV || strings.EqualFold(cve.SSVCExploitation, "active") || cve.EUVDExploitedSince != "" {
+		p += 1000
+	}
+	return p
+}
+
+func (a *Assessor) wakeAnalysis() {
+	select {
+	case a.analysisWake <- struct{}{}:
+	default:
+	}
+}
+
+// enqueueAnalysis adds id to the deep-analysis queue
+func (a *Assessor) enqueueAnalysis(id string, prio float64) {
+	a.mu.Lock()
+	a.analysis = append(a.analysis, analysisItem{id, prio})
+	a.mu.Unlock()
+	a.wakeAnalysis()
+}
+
+// nextAnalysis blocks until the queue has an item and returns the best one
+func (a *Assessor) nextAnalysis() string {
+	for {
+		a.mu.Lock()
+		if n := len(a.analysis); n > 0 {
+			best := 0
+			for i := range a.analysis {
+				if a.analysis[i].prio > a.analysis[best].prio {
+					best = i
+				}
+			}
+			id := a.analysis[best].id
+			a.analysis[best] = a.analysis[n-1]
+			a.analysis = a.analysis[:n-1]
+			more := len(a.analysis) > 0
+			a.mu.Unlock()
+			if more {
+				a.wakeAnalysis() // let another worker take the next one
+			}
+			return id
+		}
+		a.mu.Unlock()
+		<-a.analysisWake
+	}
+}
+
 func (a *Assessor) worker() {
-	for id := range a.analysisQ {
+	for {
+		id := a.nextAnalysis()
 		for !a.takeBudget() {
 			a.app.board.progress("ai-impact", "Daily limit reached; resuming tomorrow (UTC)")
 			time.Sleep(15 * time.Minute)
@@ -539,7 +607,7 @@ func (a *Assessor) processTriage(id string) {
 	a.mu.Unlock()
 	if escalate {
 		logf("AI impact: %s triaged %s, escalating to deep analysis", id, result.Rating)
-		a.analysisQ <- id // stays queued
+		a.enqueueAnalysis(id, analysisPriority(&cve, result)) // stays queued
 		return
 	}
 	a.unqueue(id)
