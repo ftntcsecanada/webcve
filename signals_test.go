@@ -81,6 +81,11 @@ func TestSignatureReadiness(t *testing.T) {
 	}{
 		{"closed source", CVE{}, "needs_research"},
 		{"public PoC", CVE{GitHubPoCs: 3}, "ready"},
+		{"detector only", CVE{GitHubPoCs: 1, Exploits: []ExploitRef{{Source: "github", Title: "foxcornlab/sap-patchday-scanner — Detection-only triage for the SAP November patch day"}}}, "needs_research"},
+		{"detector plus unlisted repos", CVE{GitHubPoCs: 3, Exploits: []ExploitRef{{Source: "github", Title: "x/version-checker"}}}, "ready"},
+		{"real PoC repo", CVE{GitHubPoCs: 1, Exploits: []ExploitRef{{Source: "github", Title: "x/CVE-2026-1 — Unauthenticated RCE exploit"}}}, "ready"},
+		{"exploit and scanner", CVE{GitHubPoCs: 1, Exploits: []ExploitRef{{Source: "github", Title: "x/y — PoC exploit and mass scanner"}}}, "ready"},
+		{"SSVC poc", CVE{SSVCExploitation: "poc"}, "ready"},
 		{"exploit module", CVE{Exploits: []ExploitRef{{Source: "metasploit"}}}, "ready"},
 		{"fix commit", CVE{References: []Reference{{URL: "https://github.com/php/php-src/commit/abc"}}}, "ready"},
 		{"package", CVE{Packages: []PackageFix{{Ecosystem: "npm", Name: "x"}}}, "ready"},

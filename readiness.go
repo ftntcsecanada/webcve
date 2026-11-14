@@ -16,6 +16,23 @@ import (
 //	needs_research coverable, but closed source with no public technical detail
 //	not_feasible   triage found no Fortinet control that could see exploitation
 
+// Repos that only detect: version checks, patch-level scanners, triage tools
+var detectionOnly = regexp.MustCompile(`(?i)\b(detect(ion|or|s)?|scanner|checker|check(s|ing)? (if|whether|for)|version[- ]check|patch[- ]?(level|day)|triage|fingerprint|vulnerab\w* scan)`)
+
+var (
+	exploitWords        = regexp.MustCompile(`(?i)\b(exploit|rce|poc|proof[- ]of[- ]concept|payload|reverse[- ]shell|webshell|weaponi[sz]ed)`)
+	explicitlyNoExploit = regexp.MustCompile(`(?i)(detection[- ]only|non[- ]exploit|no exploit|does not exploit|without exploit|safe check|non[- ]intrusive)`)
+)
+
+// isDetectorRepo reports whether a repo describes itself as a detector rather
+// than an exploit. "Exploit + scanner" repos count as exploits.
+func isDetectorRepo(desc string) bool {
+	if explicitlyNoExploit.MatchString(desc) {
+		return true
+	}
+	return detectionOnly.MatchString(desc) && !exploitWords.MatchString(desc)
+}
+
 // Fix commits and merge requests in public source repositories
 var fixCommitRef = regexp.MustCompile(`(?i)^https?://(?:(?:www\.)?github\.com|gitlab\.com|bitbucket\.org)/[^/]+/[^/]+/(?:-/)?(?:commit|commits|pull|merge_requests|compare)/|^https?://(?:git\.kernel\.org|sourceware\.org/git|git\.savannah\.gnu\.org|gitlab\.gnome\.org|android\.googlesource\.com)/`)
 
@@ -28,24 +45,35 @@ func signatureReadiness(cve *CVE) (state, reason string) {
 			return "not_feasible", "No Fortinet control is likely to see exploitation."
 		}
 	}
-	if len(cve.Exploits) > 0 || cve.GitHubPoCs > 0 {
-		var srcs []string
-		for _, x := range cve.Exploits {
-			if !contains(srcs, x.Source) {
-				srcs = append(srcs, x.Source)
+	// Exploit material, not detectors: a version checker or patch-level scanner
+	// says nothing about the exploit traffic
+	var srcs []string
+	listedGitHub, detectors := 0, 0
+	for _, x := range cve.Exploits {
+		if x.Source == "github" {
+			listedGitHub++
+			if isDetectorRepo(x.Title + " " + x.Note) {
+				detectors++
+				continue
 			}
 		}
-		r := "Public exploit material"
-		if len(srcs) > 0 {
-			r += ": " + strings.Join(srcs, ", ")
+		if !contains(srcs, x.Source) {
+			srcs = append(srcs, x.Source)
 		}
-		if cve.GitHubPoCs > 0 {
-			r += fmt.Sprintf(" (%d PoC repos)", cve.GitHubPoCs)
+	}
+	// Repos beyond the listed ones are unknown, so they may be real PoCs
+	if unlisted := cve.GitHubPoCs - listedGitHub; unlisted > 0 && !contains(srcs, "github") {
+		srcs = append(srcs, "github")
+	}
+	if len(srcs) > 0 {
+		r := "Public exploit material: " + strings.Join(srcs, ", ")
+		if n := cve.GitHubPoCs - detectors; n > 0 {
+			r += fmt.Sprintf(" (%d PoC repos)", n)
 		}
 		return "ready", r + "."
 	}
-	if cve.PublicExploit {
-		return "ready", "A reference points at public exploit code."
+	if s := strings.ToLower(cve.SSVCExploitation); s == "poc" || s == "active" {
+		return "ready", "CISA reports public proof-of-concept or active exploitation."
 	}
 	for _, r := range cve.References {
 		if fixCommitRef.MatchString(r.URL) {
@@ -54,6 +82,9 @@ func signatureReadiness(cve *CVE) (state, reason string) {
 	}
 	if len(cve.Packages) > 0 {
 		return "ready", "Open source package: the fixed release shows the change."
+	}
+	if detectors > 0 {
+		return "needs_research", "Only detection or version-check tools are public, not exploit detail; a signature needs patch diffing or vendor detail."
 	}
 	return "needs_research", "Closed source with no public exploit or fix diff yet; a signature needs patch diffing or vendor detail."
 }
