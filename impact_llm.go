@@ -86,7 +86,7 @@ func (a *Assessor) assess(cve *CVE) (*ImpactAssessment, error) {
 		}
 		return &ImpactAssessment{
 			Rating: out.Rating, Confidence: out.Confidence, Summary: out.Summary,
-			Drivers: out.Drivers, Exposure: out.Exposure, WatchFor: out.WatchFor,
+			Drivers: out.Drivers, Exposure: out.Exposure, WatchFor: out.WatchFor, Coverage: out.Coverage,
 			Model: model, Tier: "analysis", AssessedAt: time.Now().UTC(), Signals: impactSignals(cve),
 		}, nil
 	}

@@ -41,6 +41,10 @@ const headline = computed(() =>
         <dt>Exposure</dt>
         <dd>{{ a.exposure }}</dd>
       </div>
+      <div v-if="a.coverage">
+        <dt>Fortinet coverage</dt>
+        <dd>{{ a.coverage }}</dd>
+      </div>
       <div v-if="a.watchFor">
         <dt>Watch for</dt>
         <dd>{{ a.watchFor }}</dd>

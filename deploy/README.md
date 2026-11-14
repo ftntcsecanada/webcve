@@ -75,16 +75,26 @@ infrastructure. Each published CVE with CVSS 9.0 or higher that was published,
 or added to KEV, inside the window gets a rating of `severe`, `high`,
 `moderate` or `low` for its likelihood of heavy global impact. There are two tiers:
 
-1. **Triage** (`kev-8b`, `POST /v1/decisions`): every candidate gets a one-shot
-   typed decision with a probability per rating, in about 150 ms. A clear
-   moderate or low is stored as the result.
+1. **Triage** (`kev-8b`, `POST /v1/decisions`): every candidate gets one
+   typed decision call, about 150 ms, answering two factual questions: how
+   widely the affected product is deployed (ubiquitous / widespread / niche /
+   obscure), and how exploitation reaches the target (network, web, file,
+   endpoint, or nothing a security product can see). The input is short prose
+   built from facts, not the raw record: CVSS components spelled out as delivery
+   hints, the CWE, affected products, package ecosystems, exploitation evidence,
+   and the product's and vendor's CVE and KEV counts in our own corpus as a reach
+   signal. The model is never asked about Fortinet products; the delivery class
+   maps to FortiGate IPS, FortiWeb, AV/FortiMail/FortiSandbox or FortiEDR in code.
 2. **Deep analysis** (`flgpu-openai/qwen3.8-27b-openai`, chat completions): the
-   standouts, meaning triage rated high or severe, P(high)+P(severe) is at least 0.5,
-   or the CVE is in KEV or actively exploited, get a reasoned assessment
-   (summary, drivers, exposure, what to watch for) that replaces the triage
-   result. kev-8b over-rates mid-tier products (IoT, authenticated enterprise
-   bugs), and this second pass corrects that.
+   standouts get a reasoned assessment (rating, summary, drivers, exposure, what
+   to watch for, and which Fortinet controls could cover it and what a signature
+   would key on) that replaces the triage result. Standouts are CVEs that are
+   both widely deployed (P(widespread)+P(ubiquitous) of at least 0.7) and
+   coverable (P(none) under 0.5), plus every Fortinet product CVE and every
+   KEV-listed or actively exploited one. The prompt describes what each
+   Fortinet control can see, so it doesn't depend on the model's own knowledge.
 
+Everything else keeps its triage result (moderate or low, with the reason).
 A CVE is re-run when it's added to KEV, a public exploit appears, its SSVC
 exploitation status changes or its EPSS jumps a band. A triaged CVE is
 re-triaged right away, and one that already had a deep analysis is reanalysed
@@ -98,7 +108,7 @@ BIFROST_URL=http://10.160.20.209:8080          # internal gateway; the public ed
 BIFROST_API_KEY=...                            # needs the kev and flgpu-openai providers
 WEBCVE_AI_MODEL=flgpu-openai/qwen3.8-27b-openai  # deep-analysis model (default)
 WEBCVE_AI_TRIAGE_MODEL=kev-8b                  # default; "off" sends every candidate to deep analysis
-WEBCVE_AI_ESCALATE_AT=0.5                      # triage P(high)+P(severe) that triggers deep analysis
+WEBCVE_AI_ESCALATE_AT=0.7                      # triage P(widespread)+P(ubiquitous) needed for deep analysis
 WEBCVE_AI_MIN_SCORE=9.0                        # CVSS threshold
 WEBCVE_AI_WINDOW_DAYS=30                       # how far back to assess (the first start backfills this window)
 WEBCVE_AI_DAILY_LIMIT=200                      # load cap: deep analyses per UTC day (triage is uncapped)

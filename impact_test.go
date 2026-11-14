@@ -386,10 +386,21 @@ func TestImpactConfigFromEnv(t *testing.T) {
 	}
 }
 
-func decisionReply(value string, probs map[string]float64) func(http.ResponseWriter, map[string]any) {
+func decisionReply(deploy, coverage map[string]float64) func(http.ResponseWriter, map[string]any) {
+	top := func(p map[string]float64) string {
+		best := ""
+		for k, v := range p {
+			if best == "" || v > p[best] {
+				best = k
+			}
+		}
+		return best
+	}
 	return func(w http.ResponseWriter, _ map[string]any) {
 		json.NewEncoder(w).Encode(map[string]any{"model": "kev-8b", "answers": map[string]any{
-			"global_impact": map[string]any{"kind": "choice", "value": value, "confidence": 0.8, "probabilities": probs}}})
+			"deployment": map[string]any{"kind": "choice", "value": top(deploy), "confidence": 0.8, "probabilities": deploy},
+			"coverage":   map[string]any{"kind": "choice", "value": top(coverage), "confidence": 0.8, "probabilities": coverage},
+		}})
 	}
 }
 
@@ -397,45 +408,65 @@ func TestTriage(t *testing.T) {
 	var sent map[string]any
 	a, _ := fakeGateway(t, func(w http.ResponseWriter, body map[string]any) {
 		sent = body
-		decisionReply("low", map[string]float64{"low": 0.6, "moderate": 0.3, "high": 0.08, "severe": 0.02})(w, body)
+		decisionReply(map[string]float64{"obscure": 0.6, "niche": 0.3, "widespread": 0.08, "ubiquitous": 0.02},
+			map[string]float64{"web": 0.9, "network": 0.05, "none": 0.05})(w, body)
 	})
-	cve := &CVE{ID: "CVE-2026-1", BaseScore: 9.8, Description: "plugin sqli", References: []Reference{{URL: "https://x"}}}
-	res, err := a.triage(cve)
+	cve := &CVE{ID: "CVE-2026-1", BaseScore: 9.8, AttackVector: "NETWORK", CWE: "CWE-89", Description: "plugin sqli",
+		References: []Reference{{URL: "https://x"}}}
+	res, err := a.triage(cve, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Rating != "low" || res.Tier != "triage" || res.Model != "kev-8b" || res.Confidence != "high" || res.Signals == "" {
+	if res.Rating != "low" || res.Tier != "triage" || res.Model != "kev-8b" || res.Confidence != "high" || res.Signals == "" ||
+		res.CoverageClass != "web" || !strings.Contains(res.Coverage, "FortiWeb") {
 		t.Errorf("got %+v", res)
 	}
-	if !strings.Contains(res.Summary, "low 60%") {
-		t.Errorf("summary: %s", res.Summary)
-	}
-	if sent["model"] != "kev-8b" || sent["questions"] == nil || strings.Contains(sent["state"].(string), "https://x") {
+	state := sent["state"].(string)
+	if sent["model"] != "kev-8b" || strings.Contains(state, "https://x") ||
+		!strings.Contains(state, "typical of web applications") || !strings.Contains(state, "without user action") {
 		t.Errorf("request: %v", sent)
 	}
 	if a.cfg.standout(cve, res) {
-		t.Error("a clear low should not escalate")
+		t.Error("an obscure product should not escalate")
+	}
+}
+
+func TestTriageStateHistory(t *testing.T) {
+	ds := buildDataset([]CVE{
+		{ID: "CVE-2026-1", State: "PUBLISHED", AffectedProducts: []AffectedProduct{{Vendor: "Acme", Product: "Gateway"}}},
+		{ID: "CVE-2026-2", State: "PUBLISHED", AffectedProducts: []AffectedProduct{{Vendor: "Acme", Product: "Gateway"}}},
+		{ID: "CVE-2026-3", State: "PUBLISHED", AffectedProducts: []AffectedProduct{{Vendor: "Acme", Product: "Other"}}},
+	}, &Enrichment{})
+	ds.CVEs[ds.byID["CVE-2026-1"]].InKEV = true
+	state := triageState(&ds.CVEs[ds.byID["CVE-2026-2"]], ds)
+	if !strings.Contains(state, "has 2 CVEs on record, 1 of them in CISA KEV") || !strings.Contains(state, "vendor has 3 CVEs on record, 1 in CISA KEV") {
+		t.Errorf("state:\n%s", state)
 	}
 }
 
 func TestStandout(t *testing.T) {
-	cfg := impactConfig{escalateAt: 0.5}
-	low := &ImpactAssessment{Rating: "low", Probabilities: map[string]float64{"low": 0.4, "moderate": 0.3, "high": 0.2, "severe": 0.1}}
-	borderline := &ImpactAssessment{Rating: "moderate", Probabilities: map[string]float64{"moderate": 0.45, "high": 0.3, "severe": 0.25}}
+	cfg := impactConfig{escalateAt: 0.7}
+	niche := map[string]float64{"obscure": 0.2, "niche": 0.5, "widespread": 0.28, "ubiquitous": 0.02}
+	broad := map[string]float64{"niche": 0.25, "widespread": 0.6, "ubiquitous": 0.15}
+	seen := map[string]float64{"network": 0.8, "none": 0.2}
+	unseen := map[string]float64{"network": 0.2, "none": 0.8}
 	cases := []struct {
-		name string
-		cve  CVE
-		t    *ImpactAssessment
-		want bool
+		name   string
+		cve    CVE
+		deploy map[string]float64
+		cov    map[string]float64
+		want   bool
 	}{
-		{"low", CVE{}, low, false},
-		{"rated high", CVE{}, &ImpactAssessment{Rating: "high"}, true},
-		{"enough high+severe mass", CVE{}, borderline, true},
-		{"in KEV", CVE{InKEV: true}, low, true},
-		{"actively exploited", CVE{SSVCExploitation: "active"}, low, true},
+		{"niche", CVE{}, niche, seen, false},
+		{"widely deployed and coverable", CVE{}, broad, seen, true},
+		{"widely deployed, nothing can see it", CVE{}, broad, unseen, false},
+		{"niche but in KEV", CVE{InKEV: true}, niche, unseen, true},
+		{"niche but actively exploited", CVE{SSVCExploitation: "active"}, niche, seen, true},
+		{"Fortinet product", CVE{AffectedProducts: []AffectedProduct{{Vendor: "Fortinet", Product: "FortiOS"}}}, niche, unseen, true},
 	}
 	for _, c := range cases {
-		if got := cfg.standout(&c.cve, c.t); got != c.want {
+		res := &ImpactAssessment{Probabilities: c.deploy, CoverageProbabilities: c.cov}
+		if got := cfg.standout(&c.cve, res); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}

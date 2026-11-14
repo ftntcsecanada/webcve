@@ -11,10 +11,22 @@ import { explain } from "../lib/glossary.js";
 const emit = defineEmits(["open"]);
 
 const WINDOW_DAYS = 30;
-const LIMIT = 6;
+const LIMIT = 3;
 const items = ref([]);
 const total = ref(0);
 const expanded = ref(false);
+// Collapsed to its header line; remembered per browser
+const COLLAPSE_KEY = "webcve.earlyWarning.collapsed";
+const collapsed = ref(false);
+try {
+  collapsed.value = localStorage.getItem(COLLAPSE_KEY) === "1";
+} catch {}
+function toggleCollapsed() {
+  collapsed.value = !collapsed.value;
+  try {
+    localStorage.setItem(COLLAPSE_KEY, collapsed.value ? "1" : "0");
+  } catch {}
+}
 
 async function load() {
   const since = new Date(Date.now() - WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
@@ -56,24 +68,24 @@ watch(() => stats.value?.lastDataUpdate, load);
       <span v-tip="explain('AI impact')" class="ew-sub" tabindex="0">
         {{ fmtNum(total) }} critical CVE{{ total === 1 ? "" : "s" }} rated <b>high or severe</b> global-impact risk by AI in the last {{ WINDOW_DAYS }} days
       </span>
-      <button class="btn sm" @click="showAll">Show all</button>
+      <span class="ew-actions">
+        <button class="btn sm" @click="showAll">Show all</button>
+        <button class="btn ghost sm" :aria-expanded="!collapsed" @click="toggleCollapsed">{{ collapsed ? "Expand" : "Collapse" }}</button>
+      </span>
     </div>
-    <ul class="ew-list">
+    <ul v-if="!collapsed" class="ew-list">
       <li v-for="c in expanded ? items : items.slice(0, LIMIT)" :key="c.id">
-        <button class="ew-item" @click="emit('open', c.id)">
+        <button v-tip="c.aiSummary || ''" class="ew-item" @click="emit('open', c.id)">
           <ImpactBadge :rating="c.aiImpact" :confidence="c.aiConfidence" compact />
           <span class="ew-id mono">{{ c.id }}</span>
-          <span class="ew-text">
-            <span class="ew-name">{{ summaryText(c) }}</span>
-            <span v-if="c.aiSummary" class="ew-why">{{ c.aiSummary }}</span>
-          </span>
+          <span class="ew-name">{{ summaryText(c) }}</span>
           <span class="ew-meta muted">
             <template v-if="cleanName(c.vendor)">{{ c.vendor }} · </template>{{ fmtRelative(c.datePublished) }}
           </span>
         </button>
       </li>
     </ul>
-    <button v-if="items.length > LIMIT" class="btn ghost sm ew-more" @click="expanded = !expanded">
+    <button v-if="!collapsed && items.length > LIMIT" class="btn ghost sm ew-more" @click="expanded = !expanded">
       {{ expanded ? "Show fewer" : `Show ${items.length - LIMIT} more` }}
     </button>
   </section>
@@ -82,7 +94,7 @@ watch(() => stats.value?.lastDataUpdate, load);
 <style scoped>
 .early-warning {
   margin-bottom: 16px;
-  padding: 12px 14px;
+  padding: 8px 14px;
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--sev-high) 8%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--sev-high) 40%, transparent);
@@ -116,12 +128,14 @@ watch(() => stats.value?.lastDataUpdate, load);
   font-size: 13px;
   color: var(--text-2);
 }
-.ew-head .btn {
+.ew-actions {
   margin-left: auto;
+  display: inline-flex;
+  gap: 6px;
 }
 .ew-list {
   list-style: none;
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   padding: 0;
   display: grid;
   gap: 2px;
@@ -132,7 +146,7 @@ watch(() => stats.value?.lastDataUpdate, load);
   grid-template-columns: auto auto 1fr auto;
   align-items: baseline;
   gap: 10px;
-  padding: 7px 8px;
+  padding: 4px 8px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -149,24 +163,12 @@ watch(() => stats.value?.lastDataUpdate, load);
   font-size: 12.5px;
   font-weight: 600;
 }
-.ew-text {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
 .ew-name {
+  min-width: 0;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.ew-why {
-  font-size: 12.5px;
-  color: var(--text-2);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 .ew-meta {
   font-size: 12px;
@@ -179,7 +181,7 @@ watch(() => stats.value?.lastDataUpdate, load);
   .ew-item {
     grid-template-columns: auto 1fr;
   }
-  .ew-text {
+  .ew-name {
     grid-column: 1 / -1;
   }
   .ew-meta {
