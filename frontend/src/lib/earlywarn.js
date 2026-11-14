@@ -14,7 +14,9 @@ export function earlySince() {
   return new Date(Date.now() - EARLY_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
 }
 
-export const early = reactive({ items: [], seen: loadSeen(), queue: null });
+// fresh: entries that were unseen when the view was opened this page load.
+// They stay highlighted until the page is reloaded.
+export const early = reactive({ items: [], seen: loadSeen(), queue: null, fresh: new Set() });
 
 function loadSeen() {
   try {
@@ -42,6 +44,7 @@ function markSeen() {
   for (const c of early.items) {
     if (!early.seen.has(c.id)) {
       early.seen.add(c.id);
+      early.fresh.add(c.id);
       changed = true;
     }
   }

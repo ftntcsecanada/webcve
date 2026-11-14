@@ -3,6 +3,7 @@ import { computed, watch, nextTick } from "vue";
 import Icon from "./Icon.vue";
 import ImpactBadge from "./ImpactBadge.vue";
 import { state, results, addUnique } from "../lib/store.js";
+import { early } from "../lib/earlywarn.js";
 import {
   SEVERITY_LABEL,
   severityKey,
@@ -131,7 +132,7 @@ watch(
           v-for="(cve, i) in results.cves"
           :key="cve.id"
           :data-row="i"
-          :class="{ cursor: i === cursor, selected: state.selectedId === cve.id, [`ai-${cve.aiImpact}`]: cve.aiImpact }"
+          :class="{ cursor: i === cursor, selected: state.selectedId === cve.id, [`ai-${cve.aiImpact}`]: cve.aiImpact, fresh: state.view === 'early' && early.fresh.has(cve.id) }"
           @click="emit('update:cursor', i), emit('open', cve.id)"
         >
           <td class="c-score">
@@ -272,6 +273,16 @@ tbody tr.ai-severe td:first-child {
 }
 tbody tr.ai-high td:first-child {
   box-shadow: inset 4px 0 0 var(--sev-high);
+}
+/* Early warning entries that were new when the view was opened */
+tbody tr.fresh td {
+  background: color-mix(in srgb, var(--sev-high) 10%, var(--surface));
+}
+tbody tr.fresh.ai-severe td {
+  background: color-mix(in srgb, var(--sev-critical) 11%, var(--surface));
+}
+tbody tr.fresh:hover td {
+  background: color-mix(in srgb, var(--sev-high) 16%, var(--surface));
 }
 tbody tr.cursor td {
   background: var(--surface-hover);
