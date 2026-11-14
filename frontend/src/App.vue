@@ -6,7 +6,7 @@ import ResultsTable from "./components/ResultsTable.vue";
 import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
-import EarlyWarning from "./components/EarlyWarning.vue";
+import { startEarlyWarning, unseen, unseenSevere } from "./lib/earlywarn.js";
 import VendorsView from "./components/VendorsView.vue";
 import SigLabRunsPanel from "./components/SigLabRunsPanel.vue";
 import {
@@ -337,6 +337,7 @@ const statusText = {
 };
 
 onMounted(() => {
+  startEarlyWarning();
   readURL();
   startSync();
   fetchResults();
@@ -421,11 +422,20 @@ function closePopovers(e) {
               :class="{ on: state.view === key, kev: key === 'kev' }"
               @click="setView(key)"
             >
-              <Icon :name="key === 'kev' ? 'flame' : key === 'vendors' ? 'package' : 'list'" :size="14" />
+              <Icon :name="key === 'kev' ? 'flame' : key === 'vendors' ? 'package' : key === 'early' ? 'alert' : 'list'" :size="14" />
               <span v-if="key === 'kev'" v-tip="explain('KEV')" class="tab-long">{{ v.label }}</span>
+              <span v-else-if="key === 'early'" v-tip="explain('AI impact')" class="tab-long">{{ v.label }}</span>
               <span v-else class="tab-long">{{ v.label }}</span>
               <span class="tab-short">{{ v.short }}</span>
-              <span v-if="stats && key !== 'vendors'" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
+              <span
+                v-if="key === 'early'"
+                v-show="unseen.length"
+                class="tab-count num ew-new"
+                :class="{ severe: unseenSevere }"
+                :title="`${unseen.length} new since you last looked`"
+                >{{ fmtNum(unseen.length) }}</span
+              >
+              <span v-else-if="stats && key !== 'vendors'" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
             </button>
           </nav>
           <button class="btn filters-btn" @click="filtersOpen = true">
@@ -434,8 +444,6 @@ function closePopovers(e) {
           </button>
         </div>
 
-        <!-- AI early warnings: elevated global-impact ratings, always on top -->
-        <EarlyWarning v-if="!isVendors && !f.aiImpact.length" @open="openCve" />
 
         <!-- KEV overview tiles -->
         <section v-if="isKev && stats" class="tiles">
@@ -852,6 +860,13 @@ function closePopovers(e) {
   border-radius: 999px;
   background: var(--surface-hover);
   color: var(--text-3);
+}
+.tab-count.ew-new {
+  background: var(--sev-high);
+  color: #fff;
+}
+.tab-count.ew-new.severe {
+  background: var(--sev-critical);
 }
 .tabs button.on.kev .tab-count {
   background: var(--kev-soft);

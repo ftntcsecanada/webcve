@@ -29,6 +29,7 @@ export function emptyFilters() {
 export const VIEWS = {
   all: { label: "All CVEs", short: "All", defaultSort: { by: "datePublished", desc: true } },
   kev: { label: "Known Exploited", short: "KEV", defaultSort: { by: "kevDateAdded", desc: true } },
+  early: { label: "Early warning", short: "Early", defaultSort: { by: "aiImpact", desc: true } },
   vendors: { label: "Vendors", short: "Vendors", defaultSort: { by: "datePublished", desc: true } },
 };
 
@@ -39,6 +40,14 @@ export const SORTS = {
     ["baseScore", "CVSS score"],
     ["epss", "EPSS (exploit likelihood)"],
     ["aiImpact", "AI global-impact risk"],
+    ["id", "CVE ID"],
+    ["vendor", "Vendor"],
+  ],
+  early: [
+    ["aiImpact", "AI global-impact risk"],
+    ["datePublished", "Published"],
+    ["baseScore", "CVSS score"],
+    ["epss", "EPSS (exploit likelihood)"],
     ["id", "CVE ID"],
     ["vendor", "Vendor"],
   ],
@@ -153,6 +162,11 @@ function buildRequest(view, f) {
   if (f.exploit) req.publicExploit = true;
   if (f.exploitSources.length) req.exploitSources = f.exploitSources;
   if (f.aiImpact.length) req.aiImpact = f.aiImpact;
+  // Early warning: elevated AI ratings in the recent window, unless narrowed further
+  if (view === "early") {
+    if (!f.aiImpact.length) req.aiImpact = ["severe", "high"];
+    if (!f.since) req.changedSince = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  }
   if (view === "kev" || f.kevOnly) req.inKEV = true;
   if (view === "kev" && f.ransomware) req.ransomware = true;
   if (view === "kev" && f.kevDays) req.kevAddedDays = f.kevDays;
@@ -324,7 +338,7 @@ export function fromQuery(qs) {
   const p = new URLSearchParams(qs);
   const f = emptyFilters();
   const num = (k) => (p.has(k) && !isNaN(parseFloat(p.get(k))) ? parseFloat(p.get(k)) : null);
-  const view = ["kev", "vendors"].includes(p.get("view")) ? p.get("view") : "all";
+  const view = ["kev", "early", "vendors"].includes(p.get("view")) ? p.get("view") : "all";
   if (view === "vendors") {
     state.vendor.sort = p.get("vs") || "kev";
     state.vendor.desc = p.get("vd") !== "asc";
