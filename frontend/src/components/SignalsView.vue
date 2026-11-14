@@ -60,10 +60,11 @@ const rows = computed(() => {
   return out;
 });
 
+// Called from the template, where refs are already unwrapped to their (reactive) arrays
 function toggle(list, v) {
-  const i = list.value.indexOf(v);
-  if (i >= 0) list.value.splice(i, 1);
-  else list.value.push(v);
+  const i = list.indexOf(v);
+  if (i >= 0) list.splice(i, 1);
+  else list.push(v);
 }
 
 function linked(s, id) {
