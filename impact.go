@@ -54,6 +54,9 @@ const (
 	impactAlertMaxAge = 3 * 24 * time.Hour
 )
 
+// impactStorePath is where the store is read and written; a variable so tests can redirect it
+var impactStorePath = ImpactPath
+
 // Ratings, from most to least concerning
 var impactRatings = []string{"severe", "high", "moderate", "low"}
 
@@ -84,6 +87,8 @@ type ImpactAssessment struct {
 	CoverageClass         string             `json:"coverageClass,omitempty"` // triage: network, web, file, endpoint, none
 	CoverageProbabilities map[string]float64 `json:"coverageProbabilities,omitempty"`
 	VendorCloud           float64            `json:"vendorCloud,omitempty"` // triage: P(vendor-operated cloud service)
+	// RulesVersion is the triage rules a triage record was made under
+	RulesVersion int `json:"rulesVersion,omitempty"`
 	// Pending marks a triage standout waiting for its deep analysis; it isn't shown
 	Pending bool `json:"pending,omitempty"`
 }
@@ -97,6 +102,9 @@ type impactFailure struct {
 type impactStore struct {
 	Assessments map[string]*ImpactAssessment `json:"assessments"`
 	Failures    map[string]impactFailure     `json:"failures"`
+	// Deep analyses used on BudgetDay (UTC), so a restart doesn't reset the daily limit
+	BudgetDay  string `json:"budgetDay,omitempty"`
+	BudgetUsed int    `json:"budgetUsed,omitempty"`
 }
 
 type impactConfig struct {
@@ -377,7 +385,7 @@ func newAssessor(app *App) *Assessor {
 		analysisWake: make(chan struct{}, 1),
 		store:        impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
 	}
-	if data, err := os.ReadFile(ImpactPath); err == nil {
+	if data, err := os.ReadFile(impactStorePath); err == nil {
 		if err := json.Unmarshal(data, &a.store); err != nil {
 			logf("AI impact: ignoring unreadable %s: %v", ImpactPath, err)
 		}
@@ -386,6 +394,18 @@ func newAssessor(app *App) *Assessor {
 		}
 		if a.store.Failures == nil {
 			a.store.Failures = map[string]impactFailure{}
+		}
+		a.day, a.usedDay = a.store.BudgetDay, a.store.BudgetUsed
+		// Triage results from older rules are cheap to redo; deep analyses are kept
+		stale := 0
+		for id, v := range a.store.Assessments {
+			if v.Tier == "triage" && v.RulesVersion != triageRulesVersion {
+				delete(a.store.Assessments, id)
+				stale++
+			}
+		}
+		if stale > 0 {
+			logf("AI impact: re-triaging %d CVEs triaged under older rules", stale)
 		}
 	}
 	if a.cfg.enabled {
@@ -491,6 +511,7 @@ func (a *Assessor) takeBudget() bool {
 		return false
 	}
 	a.usedDay++
+	a.store.BudgetDay, a.store.BudgetUsed = a.day, a.usedDay // saved with the analysis
 	return true
 }
 
@@ -676,7 +697,7 @@ func (a *Assessor) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(ImpactPath, data)
+	return writeFileAtomic(impactStorePath, data)
 }
 
 func decodeImpactOutput(text string) (*impactOutput, error) {

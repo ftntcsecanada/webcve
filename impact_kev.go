@@ -38,6 +38,11 @@ import (
 
 const impactDefaultTriageModel = "kev-8b"
 
+// triageRulesVersion stamps triage records. Bump it when the triage questions,
+// input or escalation rules change: records from older rules are dropped at
+// startup and re-triaged (cheap). Deep analyses are never dropped this way.
+const triageRulesVersion = 1
+
 // Coverage classes, and the Fortinet controls behind each
 var coverageProducts = map[string]string{
 	"network":  "FortiGate IPS",
@@ -370,7 +375,7 @@ func (a *Assessor) triage(cve *CVE, ds *Dataset) (*ImpactAssessment, error) {
 			Rating: rating, Confidence: triageConfidence(dep.Confidence),
 			Probabilities: dep.Probabilities, CoverageProbabilities: cov.Probabilities,
 			CoverageClass: cov.Value, Coverage: triageCoverageText(cov), VendorCloud: host.Probabilities["vendor_cloud"],
-			Model: a.cfg.triageModel, Tier: "triage", AssessedAt: time.Now().UTC(), Signals: impactSignals(cve),
+			Model: a.cfg.triageModel, Tier: "triage", RulesVersion: triageRulesVersion, AssessedAt: time.Now().UTC(), Signals: impactSignals(cve),
 		}, nil
 	}
 	return nil, lastErr

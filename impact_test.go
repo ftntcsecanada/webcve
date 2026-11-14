@@ -566,3 +566,26 @@ func TestAnalysisQueueOrder(t *testing.T) {
 		t.Errorf("order: %v", got)
 	}
 }
+
+func TestStoreKeepsAnalysesAndBudget(t *testing.T) {
+	dir := t.TempDir()
+	old := impactStorePath
+	impactStorePath = dir + "/ai-impact.json"
+	t.Cleanup(func() { impactStorePath = old })
+	data, _ := json.Marshal(impactStore{
+		Assessments: map[string]*ImpactAssessment{
+			"CVE-1": {Tier: "analysis", Rating: "high"},
+			"CVE-2": {Tier: "triage", Rating: "low", RulesVersion: triageRulesVersion},
+			"CVE-3": {Tier: "triage", Rating: "low"}, // older rules
+		},
+		BudgetDay: "2026-11-14", BudgetUsed: 42,
+	})
+	os.WriteFile(impactStorePath, data, 0o644)
+	a := newAssessor(&App{board: newStatusBoard()})
+	if a.store.Assessments["CVE-1"] == nil || a.store.Assessments["CVE-2"] == nil || a.store.Assessments["CVE-3"] != nil {
+		t.Errorf("assessments after load: %v", a.store.Assessments)
+	}
+	if a.day != "2026-11-14" || a.usedDay != 42 {
+		t.Errorf("budget not restored: %s %d", a.day, a.usedDay)
+	}
+}
