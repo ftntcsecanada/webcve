@@ -124,17 +124,35 @@ browse the web. When alerts are on, a fresh critical CVE whose deep analysis
 rates it high or severe, or an analysis that escalates to one of those, posts an
 "AI early warning" to the webhook. Triage ratings never alert.
 
-### Signature readiness
+### Can Fortinet network protections act on it?
 
-Every elevated CVE also gets a signature readiness, computed from the data
-rather than by AI: **ready** (public exploit code, a Nuclei template, PoC repos,
-or open source whose fix commit or package release shows the change), **needs
-research** (closed source with no public technical detail, such as most Patch
-Tuesday fixes), or **not feasible** (triage found no Fortinet control that could
-see exploitation). The Early warning view and its counter show only ready items
-unless "Include not yet actionable" is ticked. Early-warning alerts fire only for
-ready items, and a separate "Now actionable" alert fires when a high or severe
-CVE becomes ready (for example when a PoC appears).
+Before each deep analysis, a research step reads the technical material a
+signature engineer would: Nuclei templates (the exact exploit request),
+Exploit-DB entries and Metasploit module source, public PoC READMEs, fix commits
+as diffs, and the advisory or write-up (up to six documents, 16k characters,
+cached in `/data/webcve/kev/research/` for a week or until the references
+change). These are public pages fetched from the host; the analysis itself
+stays on the local model.
+
+Qwen then answers as a FortiGuard network-protection analyst, working through
+reachability (is a FortiGate or FortiWeb in the exploit path?), visibility
+(cleartext, decryptable, or inside an encrypted session such as SSH?),
+distinctiveness (a stable marker without false positives) and existing generic
+coverage. The verdict is one of **new signature** (feasible now, with the
+detection anchor), **needs details** (would be detectable, trigger not public),
+**generic coverage**, **hard to detect** or **not network**, plus the controls
+that apply and whether Fortinet protections typically sit in the path.
+
+Only **new signature** is actionable: the Early warning view, the Signals view,
+both tab counters and the webhook cover those alone ("Include not yet actionable"
+shows the rest). An alert fires when a CVE becomes high or severe and actionable,
+if it's fresh or new exploit material caused the change, so a "needs details" CVE
+alerts the day a PoC turns it into a signature job. Analyses carry a version;
+when the prompt changes, the high and severe ones are redone.
+
+Signature readiness (ready / needs research / not feasible, from public exploit
+material and open source fixes) remains as a fallback for analyses that predate
+the network verdict.
 
 ### Signals
 

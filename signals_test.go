@@ -106,12 +106,32 @@ func TestNowActionableAlert(t *testing.T) {
 	}))
 	defer srv.Close()
 	al := &Alerter{webhook: srv.URL, client: srv.Client()}
-	severe := &ImpactAssessment{Rating: "severe", Tier: "analysis"}
-	prev := buildDataset([]CVE{{ID: "CVE-2026-1", State: "PUBLISHED"}, {ID: "CVE-2026-2", State: "PUBLISHED"}}, &Enrichment{})
-	next := buildDataset([]CVE{{ID: "CVE-2026-1", State: "PUBLISHED"}, {ID: "CVE-2026-2", State: "PUBLISHED"}}, &Enrichment{})
-	next.CVEs[next.byID["CVE-2026-1"]].AIImpact = severe
-	next.CVEs[next.byID["CVE-2026-1"]].GitHubPoCs = 1    // a PoC appeared
-	next.CVEs[next.byID["CVE-2026-2"]].AIImpact = severe // still closed
+	analysis := func(rating, network string) *ImpactAssessment {
+		return &ImpactAssessment{Rating: rating, Tier: "analysis", AnalysisVersion: impactAnalysisVersion, Network: network, DetectionAnchor: "POST /api/x with ../"}
+	}
+	fresh, old := time.Now().Add(-time.Hour), time.Now().AddDate(0, 0, -20)
+	ids := []string{"CVE-2026-1", "CVE-2026-2", "CVE-2026-3", "CVE-2026-4", "CVE-2026-5"}
+	mk := func() *Dataset {
+		var cves []CVE
+		for i, id := range ids {
+			d := old
+			if i == 0 || i == 4 {
+				d = fresh
+			}
+			cves = append(cves, CVE{ID: id, State: "PUBLISHED", DatePublished: d})
+		}
+		return buildDataset(cves, &Enrichment{})
+	}
+	prev, next := mk(), mk()
+	set := func(ds *Dataset, id string, a *ImpactAssessment) { ds.CVEs[ds.byID[id]].AIImpact = a }
+	set(next, "CVE-2026-1", analysis("severe", "new_signature")) // fresh analysis, actionable: alert
+	set(next, "CVE-2026-2", analysis("high", "needs_details"))   // not actionable: quiet
+	set(prev, "CVE-2026-3", analysis("high", "needs_details"))   // a PoC appeared and the verdict flipped: alert
+	set(next, "CVE-2026-3", analysis("high", "new_signature"))
+	next.CVEs[next.byID["CVE-2026-3"]].GitHubPoCs = 1
+	set(next, "CVE-2026-4", analysis("high", "new_signature")) // old CVE, re-analysis backfill, no new evidence: quiet
+	set(prev, "CVE-2026-5", analysis("high", "new_signature")) // already notable: quiet
+	set(next, "CVE-2026-5", analysis("severe", "new_signature"))
 	al.nowActionable(prev, next)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -123,10 +143,52 @@ func TestNowActionableAlert(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
-	if len(posts) != 1 || !strings.Contains(posts[0], "CVE-2026-1") || strings.Contains(posts[0], "CVE-2026-2") {
-		t.Errorf("posts: %q", posts)
+	if len(posts) != 1 {
+		t.Fatalf("posts: %q", posts)
+	}
+	for _, id := range []string{"CVE-2026-1", "CVE-2026-3"} {
+		if !strings.Contains(posts[0], id) {
+			t.Errorf("missing %s: %s", id, posts[0])
+		}
+	}
+	for _, id := range []string{"CVE-2026-2", "CVE-2026-4", "CVE-2026-5"} {
+		if strings.Contains(posts[0], id+" ") {
+			t.Errorf("unexpected %s: %s", id, posts[0])
+		}
+	}
+	if !strings.Contains(posts[0], "Anchor: POST /api/x") {
+		t.Errorf("anchor missing: %s", posts[0])
+	}
+}
+
+func TestResearchRawURLs(t *testing.T) {
+	cases := map[string]string{
+		"https://github.com/projectdiscovery/nuclei-templates/blob/main/http/cves/2026/CVE-2026-1.yaml": "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/main/http/cves/2026/CVE-2026-1.yaml",
+		"https://github.com/php/php-src/commit/abc1234":                                                 "https://github.com/php/php-src/commit/abc1234.patch",
+		"https://www.exploit-db.com/exploits/51234":                                                     "https://www.exploit-db.com/raw/51234",
+		"https://www.rapid7.com/db/modules/exploit/linux/http/foo_rce/":                                 "https://raw.githubusercontent.com/rapid7/metasploit-framework/master/modules/exploits/linux/http/foo_rce.rb",
+	}
+	for in, want := range cases {
+		if got := rawURL("exploit", in); got != want {
+			t.Errorf("%s: got %s", in, got)
+		}
+	}
+	if got := rawURL("poc", "https://github.com/someone/CVE-2026-1-poc"); got != "https://raw.githubusercontent.com/someone/CVE-2026-1-poc/HEAD/README.md" {
+		t.Errorf("poc readme: %s", got)
+	}
+	srcs := researchSources(&CVE{
+		Exploits:   []ExploitRef{{Source: "github", URL: "https://github.com/a/b"}, {Source: "nuclei", URL: "https://github.com/projectdiscovery/nuclei-templates/blob/main/x.yaml"}},
+		References: []Reference{{URL: "https://nvd.nist.gov/vuln/detail/CVE-1"}, {URL: "https://github.com/o/r/commit/abcdef1"}, {URL: "https://vendor.example/advisory"}},
+	})
+	var kinds []string
+	for _, s := range srcs {
+		kinds = append(kinds, s.Kind)
+	}
+	if strings.Join(kinds, ",") != "scanner-template,fix-diff,poc,advisory" {
+		t.Errorf("source order: %v", kinds)
 	}
 }
 

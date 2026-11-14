@@ -29,7 +29,7 @@ type FilterRequest struct {
 	KEVDue         string   `json:"kevDue"`       // "overdue", or N = due within the next N days
 	ChangedSince   string   `json:"changedSince"` // Published or added to KEV at/after this time (RFC 3339 or date)
 	AIImpact       []string `json:"aiImpact"`     // AI global-impact ratings: severe, high, moderate, low
-	SigReady       bool     `json:"sigReady"`     // Only CVEs a signature can be written for today
+	SigReady       bool     `json:"sigReady"`     // Only CVEs Fortinet network protections can act on today
 	SortBy         string   `json:"sortBy"`
 	SortDesc       bool     `json:"sortDesc"`
 	Page           int      `json:"page"`
@@ -66,6 +66,8 @@ type CVESummary struct {
 	AIImpact       string    `json:"aiImpact,omitempty"`
 	SigReadiness   string    `json:"sigReadiness,omitempty"` // ready, needs_research, not_feasible
 	SigReason      string    `json:"sigReason,omitempty"`
+	Network        string    `json:"network,omitempty"` // deep analysis network-protection verdict
+	Actionable     bool      `json:"actionable,omitempty"`
 	AIConfidence   string    `json:"aiConfidence,omitempty"`
 	AISummary      string    `json:"aiSummary,omitempty"`
 }
@@ -441,10 +443,8 @@ func (ds *Dataset) failedGroups(i int, f *compiledFilter) int {
 	if f.impacts != nil && (cve.AIImpact == nil || !f.impacts[cve.AIImpact.Rating]) {
 		failed |= gImpact
 	}
-	if f.req.SigReady {
-		if st, _ := signatureReadiness(cve); st != "ready" {
-			failed |= gImpact
-		}
+	if f.req.SigReady && !networkActionable(cve) {
+		failed |= gImpact
 	}
 	return failed
 }
@@ -603,6 +603,7 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 		s.AISummary = truncate(cve.AIImpact.Summary, 400)
 		// Readiness matters for what the AI flags; elsewhere it's noise
 		s.SigReadiness, s.SigReason = signatureReadiness(cve)
+		s.Network, s.Actionable = cve.AIImpact.Network, networkActionable(cve)
 	}
 	return s
 }

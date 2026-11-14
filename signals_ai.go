@@ -215,7 +215,7 @@ func signalTriageSummary(s *Signal, t *ImpactAssessment, coverable bool) string 
 func (h *SignalHub) analysisLoop() {
 	for {
 		id := h.next(func(s *Signal, now time.Time) bool {
-			return s.AI != nil && s.AI.Pending && (s.FailAt.IsZero() || now.Sub(s.FailAt) > impactRetryAfter)
+			return s.AI != nil && (s.AI.Pending || analysisOutdated(s.AI)) && (s.FailAt.IsZero() || now.Sub(s.FailAt) > impactRetryAfter)
 		}, func(s *Signal) float64 {
 			p := 100 * triageReach(s.AI.Probabilities)
 			if s.ReportProbs["exploitation"] >= 0.5 {
@@ -274,7 +274,7 @@ func (h *SignalHub) reuseCVEAnalysis(s *Signal) (*ImpactAssessment, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, id := range s.CVEs {
-		if prev := a.store.Assessments[id]; prev != nil && prev.Tier != "triage" {
+		if prev := a.store.Assessments[id]; prev != nil && prev.Tier == "analysis" && prev.AnalysisVersion == impactAnalysisVersion {
 			cp := *prev
 			cp.Tier = "linked"
 			cp.Summary = "From the analysis of " + id + ": " + prev.Summary
@@ -284,7 +284,8 @@ func (h *SignalHub) reuseCVEAnalysis(s *Signal) (*ImpactAssessment, error) {
 	return nil, nil
 }
 
-// analyse asks the reasoning model about the item itself
+// analyse asks the reasoning model about the item itself, with the item's own
+// page and the research material of a CVE it names as evidence
 func (h *SignalHub) analyse(s *Signal) (*ImpactAssessment, error) {
 	a := h.app.impact
 	label := s.Feed
@@ -295,47 +296,24 @@ func (h *SignalHub) analyse(s *Signal) (*ImpactAssessment, error) {
 		"today": time.Now().UTC().Format("2006-01-02"), "source": label, "published": s.Published.Format("2006-01-02"),
 		"title": s.Title, "url": s.URL, "text": truncate(s.Summary, 4000), "cvesMentioned": s.CVEs,
 	}
+	sources := []researchDoc{{Kind: "write-up", URL: s.URL}}
 	if ds := h.app.dataset(); ds != nil {
 		for _, id := range s.CVEs {
 			if i, ok := ds.byID[id]; ok {
 				var rec any
 				json.Unmarshal([]byte(impactInput(&ds.CVEs[i], time.Now())), &rec)
 				in["cveRecord"] = rec
+				sources = append(sources, researchSources(&ds.CVEs[i])...)
 				break
 			}
 		}
 	}
+	docs := gatherResearch("signal-"+s.ID, sources)
 	data, _ := json.MarshalIndent(in, "", "  ")
-	body, _ := json.Marshal(chatRequest{
-		Model: a.cfg.model, Temperature: 0.2, MaxTokens: 16000,
-		Messages: []chatMessage{
-			{Role: "system", Content: impactSystemPrompt},
-			{Role: "user", Content: "Assess this security report for its likelihood of heavy global impact. It may describe a vulnerability " +
-				"before a CVE is published, so judge from what it says. If it isn't about a specific vulnerability or its exploitation, rate it low and say so.\n\n<report>\n" +
-				string(data) + "\n</report>"},
-		},
-		ResponseFormat: map[string]any{
-			"type":        "json_schema",
-			"json_schema": map[string]any{"name": "impact_assessment", "strict": true, "schema": impactSchema},
-		},
-	})
-	res, err := a.chat(body)
-	if err != nil {
-		return nil, err
-	}
-	out, err := decodeImpactOutput(res.content)
-	if err != nil {
-		return nil, err
-	}
-	model := res.model
-	if model == "" {
-		model = a.cfg.model
-	}
-	return &ImpactAssessment{
-		Rating: out.Rating, Confidence: out.Confidence, Summary: out.Summary, Drivers: out.Drivers,
-		Exposure: out.Exposure, WatchFor: out.WatchFor, Coverage: out.Coverage,
-		Model: model, Tier: "analysis", AssessedAt: time.Now().UTC(),
-	}, nil
+	return a.assessWith(impactUserPrompt("Assess this security report for its likelihood of heavy global impact and whether Fortinet network protections can catch it. "+
+		"It may describe a vulnerability before a CVE is published, so judge from what it and the research material say. "+
+		"If it isn't about a specific vulnerability or its exploitation, rate it low, set network_protection to not_network and say so.",
+		"report", string(data), docs), "", docs)
 }
 
 // ---- Queue helpers ----
@@ -392,7 +370,7 @@ func (h *SignalHub) queueStatus() SignalQueueStatus {
 		switch {
 		case h.needsTriage(s, now):
 			st.AwaitingTriage++
-		case s.AI != nil && s.AI.Pending:
+		case s.AI != nil && (s.AI.Pending || analysisOutdated(s.AI)):
 			st.AwaitingAnalysis++
 		}
 	}

@@ -143,33 +143,47 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// nowActionable posts when a CVE whose deep analysis rates it high or severe
-// becomes signature-ready, such as when a public exploit appears. Until then it
-// stays quiet: there's nothing to build a signature from.
+// nowActionable posts when a CVE becomes notable for the signature team: rated
+// high or severe by its deep analysis, and actionable by Fortinet network
+// protections. That happens when an analysis lands, a rating escalates, or new
+// exploit material turns "needs details" into "new signature". Only fresh CVEs
+// or new evidence alert, so a backfill or re-analysis doesn't flood the webhook.
 func (a *Alerter) nowActionable(prev, next *Dataset) {
+	notable := func(c *CVE) bool {
+		return c.AIImpact != nil && c.AIImpact.Tier != "triage" && impactRank(c.AIImpact.Rating) >= impactRank("high") && networkActionable(c)
+	}
 	var lines []string
 	for i := range next.CVEs {
 		cve := &next.CVEs[i]
-		if cve.AIImpact == nil || cve.AIImpact.Tier == "triage" || impactRank(cve.AIImpact.Rating) < impactRank("high") {
+		if !notable(cve) {
 			continue
 		}
 		if a.vendors != nil && !anyKeyIn(next.vendorKeys[i], a.vendors) {
 			continue
 		}
-		j, existed := prev.byID[cve.ID]
-		if !existed {
+		var before *CVE
+		if j, ok := prev.byID[cve.ID]; ok {
+			before = &prev.CVEs[j]
+		}
+		if before != nil && notable(before) {
 			continue
 		}
-		before, _ := signatureReadiness(&prev.CVEs[j])
-		now, reason := signatureReadiness(cve)
-		if now != "ready" || before == "ready" {
+		fresh := time.Since(cve.DatePublished) <= impactAlertMaxAge ||
+			(cve.InKEV && cve.KEVDateAdded >= time.Now().Add(-impactAlertMaxAge).Format("2006-01-02"))
+		newEvidence := before != nil && (len(cve.Exploits) != len(before.Exploits) || cve.GitHubPoCs != before.GitHubPoCs ||
+			cve.PublicExploit != before.PublicExploit)
+		if !fresh && !newEvidence {
 			continue
 		}
 		id := cve.ID
 		if a.baseURL != "" {
 			id = fmt.Sprintf("<%s/?cve=%s|%s>", a.baseURL, cve.ID, cve.ID)
 		}
-		lines = append(lines, fmt.Sprintf("🛠️ %s %s (%s global risk) %s", id, summaryTitle(cve), cve.AIImpact.Rating, reason))
+		line := fmt.Sprintf("🛡️ %s (CVSS %.1f, %s global risk) %s", id, cve.BaseScore, cve.AIImpact.Rating, summaryTitle(cve))
+		if anchor := cve.AIImpact.DetectionAnchor; anchor != "" {
+			line += "\n    Anchor: " + truncate(anchor, 240)
+		}
+		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
 		return
@@ -177,5 +191,5 @@ func (a *Alerter) nowActionable(prev, next *Dataset) {
 	if len(lines) > 20 {
 		lines = append(lines[:20], fmt.Sprintf("…and %d more", len(lines)-20))
 	}
-	a.post("*Now actionable: signature-ready early warnings*\n" + strings.Join(lines, "\n"))
+	a.post("*AI early warning: actionable by Fortinet network protections*\n" + strings.Join(lines, "\n"))
 }

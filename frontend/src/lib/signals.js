@@ -29,7 +29,8 @@ function saveSeen() {
 }
 
 // Worth a reader's attention: rated high or severe, and something a signature can be built from
-export const isNotable = (s) => s.ai && IMPACT_ELEVATED.includes(s.ai.rating) && s.readiness === "ready";
+export const isNotable = (s) =>
+  s.ai && IMPACT_ELEVATED.includes(s.ai.rating) && (s.ai.network ? s.ai.network === "new_signature" : s.readiness === "ready" && s.ai.tier !== "triage");
 
 export const unseenSignals = computed(() => signals.items.filter((s) => isNotable(s) && !signals.seen.has(s.id)));
 export const unseenSignalsSevere = computed(() => unseenSignals.value.some((s) => s.ai.rating === "severe"));

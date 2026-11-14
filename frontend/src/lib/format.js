@@ -261,4 +261,19 @@ export const IMPACT_LABEL = { severe: "Severe", high: "High", moderate: "Moderat
 export const IMPACT_ELEVATED = ["severe", "high"];
 
 // Signature readiness labels
+// Network-protection verdict from the deep analysis: can Fortinet network protections act on it?
+export const NETWORK_LABEL = {
+  new_signature: "New signature",
+  needs_details: "Needs details",
+  generic_coverage: "Generic coverage",
+  hard_to_detect: "Hard to detect",
+  not_network: "Not network",
+};
+export const NETWORK_TIP = {
+  new_signature: "A dedicated network signature is feasible now: the exploit path is inspectable and the public material gives a concrete anchor.",
+  needs_details: "Would be detectable on the network, but the detail needed to write a signature isn't public yet.",
+  generic_coverage: "Existing generic IPS or WAF protections likely catch common exploitation.",
+  hard_to_detect: "The traffic is reachable, but the payload is encrypted, looks like normal use, or varies too much.",
+  not_network: "Exploitation doesn't cross an inspectable network path.",
+};
 export const SIG_LABEL = { ready: "Signature-ready", needs_research: "Needs research", not_feasible: "No coverage" };

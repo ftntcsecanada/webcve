@@ -108,3 +108,32 @@ func signalReadiness(s *Signal, ds *Dataset) (state, reason string) {
 	}
 	return "needs_research", "Closed-source notice with no public technical detail yet."
 }
+
+// networkActionable reports whether the signature team can work on a CVE
+// today: its deep analysis found a concrete detection anchor for a network
+// protection. Analyses from before the network verdict existed fall back to
+// public-detail readiness until they're redone.
+func networkActionable(cve *CVE) bool {
+	a := cve.AIImpact
+	if a == nil || a.Tier == "triage" {
+		return false
+	}
+	if a.AnalysisVersion >= 2 {
+		return a.Network == "new_signature"
+	}
+	st, _ := signatureReadiness(cve)
+	return st == "ready"
+}
+
+// signalActionable is the same test for a signal
+func signalActionable(s *Signal, ds *Dataset) bool {
+	a := s.AI
+	if a == nil || a.Tier == "triage" || a.Pending {
+		return false
+	}
+	if a.AnalysisVersion >= 2 {
+		return a.Network == "new_signature"
+	}
+	st, _ := signalReadiness(s, ds)
+	return st == "ready" && s.Report != "other"
+}

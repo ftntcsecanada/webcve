@@ -7,7 +7,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -157,51 +156,6 @@ func TestEnrichmentAppliesAIImpact(t *testing.T) {
 	applyEnrichment(&cve, &Enrichment{})
 	if cve.AIImpact != nil {
 		t.Fatal("stale assessment kept after rebuild")
-	}
-}
-
-func TestEarlyWarningAlerts(t *testing.T) {
-	var mu sync.Mutex
-	var posts []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
-		mu.Lock()
-		posts = append(posts, body["text"])
-		mu.Unlock()
-	}))
-	defer srv.Close()
-	al := &Alerter{webhook: srv.URL, client: srv.Client()}
-	fresh := &CVE{ID: "CVE-2026-1", DatePublished: time.Now().Add(-time.Hour), BaseScore: 9.8, GitHubPoCs: 2}
-	old := &CVE{ID: "CVE-2026-2", DatePublished: time.Now().AddDate(0, 0, -20), BaseScore: 9.8, GitHubPoCs: 1}
-	closed := &CVE{ID: "CVE-2026-3", DatePublished: time.Now().Add(-time.Hour), BaseScore: 9.8}
-	al.earlyWarning(closed, nil, &ImpactAssessment{Rating: "severe", Summary: "s"}) // not actionable yet: no alert
-
-	al.earlyWarning(fresh, nil, &ImpactAssessment{Rating: "severe", Summary: "s"})                               // alert
-	al.earlyWarning(fresh, nil, &ImpactAssessment{Rating: "moderate", Summary: "s"})                             // below threshold
-	al.earlyWarning(old, nil, &ImpactAssessment{Rating: "high", Summary: "s"})                                   // backfill: no alert
-	al.earlyWarning(old, &ImpactAssessment{Rating: "moderate"}, &ImpactAssessment{Rating: "high", Summary: "s"}) // escalation
-	al.earlyWarning(old, &ImpactAssessment{Rating: "severe"}, &ImpactAssessment{Rating: "severe", Summary: "s"}) // no change
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		mu.Lock()
-		n := len(posts)
-		mu.Unlock()
-		if n >= 2 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(50 * time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
-	if len(posts) != 2 {
-		t.Fatalf("want 2 alerts, got %d: %q", len(posts), posts)
-	}
-	joined := strings.Join(posts, "\n")
-	if !strings.Contains(joined, "CVE-2026-1") || !strings.Contains(joined, "raised to HIGH (was moderate)") {
-		t.Errorf("unexpected alerts: %q", posts)
 	}
 }
 
@@ -610,5 +564,24 @@ func TestQueueStatus(t *testing.T) {
 	var none *Assessor
 	if none.queueStatus().Enabled {
 		t.Error("nil assessor should report disabled")
+	}
+}
+
+func TestOnlyElevatedAnalysesAreRedone(t *testing.T) {
+	cve := &CVE{BaseScore: 9.8}
+	sig := impactSignals(cve)
+	old := func(r string) *ImpactAssessment {
+		return &ImpactAssessment{Tier: "analysis", Rating: r, Signals: sig, AssessedAt: time.Now(), AnalysisVersion: 1}
+	}
+	if !needsAssessment(cve, old("severe"), nil, time.Now()) || !needsAssessment(cve, old("high"), nil, time.Now()) {
+		t.Error("outdated high/severe analyses should be redone")
+	}
+	if needsAssessment(cve, old("moderate"), nil, time.Now()) || needsAssessment(cve, old("low"), nil, time.Now()) {
+		t.Error("outdated moderate/low analyses should be kept")
+	}
+	cur := old("severe")
+	cur.AnalysisVersion = impactAnalysisVersion
+	if needsAssessment(cve, cur, nil, time.Now()) {
+		t.Error("a current analysis should be kept")
 	}
 }

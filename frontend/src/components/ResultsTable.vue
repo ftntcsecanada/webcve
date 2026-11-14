@@ -17,6 +17,8 @@ import {
   EXPLOIT_SOURCE_LABEL,
   IMPACT_ELEVATED,
   SIG_LABEL,
+  NETWORK_LABEL,
+  NETWORK_TIP,
 } from "../lib/format.js";
 import { explain } from "../lib/glossary.js";
 
@@ -158,7 +160,15 @@ watch(
             <div class="id-badges">
               <ImpactBadge :rating="cve.aiImpact" :confidence="cve.aiConfidence" compact />
               <span
-                v-if="cve.sigReadiness && IMPACT_ELEVATED.includes(cve.aiImpact)"
+                v-if="cve.network && IMPACT_ELEVATED.includes(cve.aiImpact)"
+                v-tip="NETWORK_TIP[cve.network]"
+                class="badge"
+                :class="`net-${cve.network}`"
+                tabindex="0"
+                >{{ NETWORK_LABEL[cve.network] }}</span
+              >
+              <span
+                v-else-if="cve.sigReadiness && IMPACT_ELEVATED.includes(cve.aiImpact)"
                 v-tip="cve.sigReason"
                 class="badge"
                 :class="`sig-${cve.sigReadiness}`"

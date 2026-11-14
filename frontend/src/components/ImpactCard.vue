@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from "vue";
 import Icon from "./Icon.vue";
-import { IMPACT_LABEL, IMPACT_ELEVATED, fmtRelative } from "../lib/format.js";
+import { IMPACT_LABEL, IMPACT_ELEVATED, NETWORK_LABEL, NETWORK_TIP, fmtRelative } from "../lib/format.js";
 
 // The AI model's early-warning assessment of global impact for one CVE
 const props = defineProps({ assessment: { type: Object, required: true } });
@@ -36,12 +36,36 @@ const headline = computed(() =>
       <li v-for="(d, i) in a.drivers" :key="i">{{ d }}</li>
     </ul>
 
+    <div v-if="a.network" class="ai-net">
+      <div class="ai-net-head">
+        <span class="ai-net-title">Fortinet network protection</span>
+        <span v-tip="NETWORK_TIP[a.network]" class="badge" :class="`net-${a.network}`" tabindex="0">{{ NETWORK_LABEL[a.network] }}</span>
+        <span v-for="c in a.networkControls || []" :key="c" class="badge">{{ c }}</span>
+      </div>
+      <dl class="ai-grid">
+        <div v-if="a.detectionAnchor">
+          <dt>Detection anchor</dt>
+          <dd>{{ a.detectionAnchor }}</dd>
+        </div>
+        <div v-if="a.deploymentFit">
+          <dt>In the exploit path?</dt>
+          <dd>{{ a.deploymentFit }}</dd>
+        </div>
+      </dl>
+      <details v-if="a.researchSources?.length" class="ai-sources">
+        <summary>Evidence read ({{ a.researchSources.length }})</summary>
+        <ul>
+          <li v-for="u in a.researchSources" :key="u"><a :href="u" target="_blank" rel="noopener noreferrer">{{ u }}</a></li>
+        </ul>
+      </details>
+    </div>
+
     <dl class="ai-grid">
       <div v-if="a.exposure">
         <dt>Exposure</dt>
         <dd>{{ a.exposure }}</dd>
       </div>
-      <div v-if="a.coverage">
+      <div v-if="a.coverage && !a.network">
         <dt>Fortinet coverage</dt>
         <dd>{{ a.coverage }}</dd>
       </div>
@@ -140,5 +164,34 @@ const headline = computed(() =>
 .ai-foot {
   margin-top: 10px;
   font-size: 11.5px;
+}
+.ai-net {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.ai-net-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ai-net-title {
+  font-weight: 650;
+  font-size: 13px;
+  margin-right: 4px;
+}
+.ai-sources {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.ai-sources ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.ai-sources a {
+  overflow-wrap: anywhere;
 }
 </style>

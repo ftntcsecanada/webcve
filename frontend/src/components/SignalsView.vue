@@ -4,7 +4,7 @@ import Icon from "./Icon.vue";
 import ImpactBadge from "./ImpactBadge.vue";
 import ImpactCard from "./ImpactCard.vue";
 import { signals } from "../lib/signals.js";
-import { fmtNum, fmtRelative, IMPACT_LABEL, SIG_LABEL } from "../lib/format.js";
+import { fmtNum, fmtRelative, IMPACT_LABEL, SIG_LABEL, NETWORK_LABEL, NETWORK_TIP } from "../lib/format.js";
 
 // Early-warning items that aren't tied to a CVE record (yet). By default only
 // actionable ones show: about a specific vulnerability or its exploitation, and
@@ -42,7 +42,8 @@ watch(
 const open = ref(null);
 const showFeeds = ref(false);
 
-const actionable = (s) => s.readiness === "ready" && s.report !== "other";
+// Actionable: the deep analysis found a concrete network-signature anchor
+const actionable = (s) => (s.ai?.network ? s.ai.network === "new_signature" : s.readiness === "ready" && s.report !== "other" && s.ai?.tier !== "triage");
 const rank = (s) => (s.ai ? { severe: 4, high: 3, moderate: 2, low: 1 }[s.ai.rating] || 0 : 0);
 
 const hiddenCount = computed(() => signals.items.filter((s) => !actionable(s)).length);
@@ -131,7 +132,10 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
             <ImpactBadge v-if="s.ai" :rating="s.ai.rating" :confidence="s.ai.confidence" compact />
             <span v-if="s.ai && !['severe', 'high'].includes(s.ai.rating)" class="badge" :class="`ai-${s.ai.rating}`">{{ IMPACT_LABEL[s.ai.rating] }}</span>
             <span v-if="!s.ai" class="badge ai-low">Not rated yet</span>
-            <span v-tip="s.readyWhy" class="badge" :class="`sig-${s.readiness}`" tabindex="0">{{ SIG_LABEL[s.readiness] }}</span>
+            <span v-if="s.ai?.network" v-tip="NETWORK_TIP[s.ai.network]" class="badge" :class="`net-${s.ai.network}`" tabindex="0">{{
+              NETWORK_LABEL[s.ai.network]
+            }}</span>
+            <span v-else v-tip="s.readyWhy" class="badge" :class="`sig-${s.readiness}`" tabindex="0">{{ SIG_LABEL[s.readiness] }}</span>
           </div>
           <div class="sg-main">
             <a class="sg-title" :href="s.url" target="_blank" rel="noopener noreferrer" @click.stop>{{ s.title }}</a>
