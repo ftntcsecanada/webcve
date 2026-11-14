@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -67,6 +68,14 @@ var triageQuestions = map[string]any{
 			"file":     "the victim opens a malicious file, document, image, media file, archive or email attachment",
 			"endpoint": "local exploitation on a host the attacker already has access to: privilege escalation, drivers, kernel, local services or binaries",
 			"none":     "nothing a network or endpoint security product can see: physical, Bluetooth, Wi-Fi or cellular radio access, hardware or side-channel flaws, fixes made only on a cloud provider's backend, supply-chain compromise of a package",
+		},
+	},
+	"hosting": map[string]any{
+		"type":         "choice",
+		"instructions": "Who runs and patches the affected product?",
+		"criteria": map[string]any{
+			"vendor_cloud":       "a cloud service the vendor operates and fixes on its own backend (SaaS, PaaS, managed cloud); customers have nothing to install",
+			"customer_installed": "software, firmware, libraries or devices that customers install, run and patch themselves",
 		},
 	},
 }
@@ -273,6 +282,12 @@ var memoryCWEs = map[string]bool{
 	"CWE-416": true, "CWE-476": true, "CWE-787": true, "CWE-843": true,
 }
 
+// Radio protocols: exploitation never crosses an inspectable network or host
+var (
+	radioTerms = regexp.MustCompile(`(?i)\b(baseband|cellular|NAS message|RRC|LTE|5G NR|bluetooth|NFC|zigbee|LoRa)\b`)
+	wifiTerms  = regexp.MustCompile(`(?i)\b(wi-?fi|WLAN|802\.11)\b`)
+)
+
 // deliveryHints spells out, from CVSS and the CWE, how exploitation reaches the
 // target, so the decision model doesn't have to infer it
 func deliveryHints(cve *CVE) []string {
@@ -296,6 +311,10 @@ func deliveryHints(cve *CVE) []string {
 		}
 	case "PHYSICAL":
 		h = append(h, "Needs physical access to the device.")
+	}
+	text := cve.Title + " " + cve.Description + " " + cve.Product
+	if radioTerms.MatchString(text) || (normalizeAttackVector(cve.AttackVector) == "ADJACENT" && wifiTerms.MatchString(text)) {
+		h = append(h, "Delivered over a radio interface (cellular, Bluetooth, NFC or Wi-Fi frames), which network and endpoint security products don't inspect.")
 	}
 	cwe := strings.ToUpper(strings.TrimSpace(cve.CWE))
 	switch {
@@ -331,7 +350,7 @@ func (a *Assessor) triage(cve *CVE, ds *Dataset) (*ImpactAssessment, error) {
 		if err := json.Unmarshal(raw, &res); err != nil {
 			return nil, fmt.Errorf("unreadable decision response: %w", err)
 		}
-		dep, cov := res.Answers["deployment"], res.Answers["coverage"]
+		dep, cov, host := res.Answers["deployment"], res.Answers["coverage"], res.Answers["hosting"]
 		if len(dep.Probabilities) == 0 || len(cov.Probabilities) == 0 {
 			return nil, fmt.Errorf("decision model gave no usable answer: %s", truncate(string(raw), 200))
 		}
@@ -344,7 +363,7 @@ func (a *Assessor) triage(cve *CVE, ds *Dataset) (*ImpactAssessment, error) {
 		return &ImpactAssessment{
 			Rating: rating, Confidence: triageConfidence(dep.Confidence),
 			Probabilities: dep.Probabilities, CoverageProbabilities: cov.Probabilities,
-			CoverageClass: cov.Value, Coverage: triageCoverageText(cov),
+			CoverageClass: cov.Value, Coverage: triageCoverageText(cov), VendorCloud: host.Probabilities["vendor_cloud"],
 			Model: a.cfg.triageModel, Tier: "triage", AssessedAt: time.Now().UTC(), Signals: impactSignals(cve),
 		}, nil
 	}
@@ -362,7 +381,7 @@ func triageConfidence(c float64) string {
 }
 
 func triageCoverageText(cov decisionAnswer) string {
-	if cov.Value == "none" {
+	if cov.Value == "none" || len(cov.Probabilities) == 0 {
 		return fmt.Sprintf("Probably nothing in the portfolio can see exploitation (%.0f%%).", cov.Probabilities["none"]*100)
 	}
 	return fmt.Sprintf("Likely %s exploitation (%.0f%%): %s.", cov.Value, cov.Probabilities[cov.Value]*100, coverageProducts[cov.Value])
@@ -370,6 +389,10 @@ func triageCoverageText(cov decisionAnswer) string {
 
 // triageSummary explains a triage result that wasn't escalated
 func triageSummary(t *ImpactAssessment, coverable bool) string {
+	if t.VendorCloud >= 0.5 {
+		return "Fast triage judged this a cloud service the vendor fixes on its own backend, which no Fortinet control can cover, so it didn't get a deep analysis. " +
+			"Deployment estimate: " + probList(t.Probabilities) + "."
+	}
 	if !coverable {
 		return "Fast triage found no Fortinet control likely to see exploitation, so it didn't get a deep analysis. " +
 			"Deployment estimate: " + probList(t.Probabilities) + "."
@@ -391,9 +414,10 @@ func probList(p map[string]float64) string {
 	return strings.Join(parts, ", ")
 }
 
-// coverable reports whether some Fortinet control could plausibly see exploitation
+// coverable reports whether some Fortinet control could plausibly see
+// exploitation: a delivery path we inspect, on something customers run
 func (c impactConfig) coverable(t *ImpactAssessment) bool {
-	return t.CoverageProbabilities["none"] < 0.5
+	return t.CoverageProbabilities["none"] < 0.5 && t.VendorCloud < 0.5
 }
 
 // standout reports whether a triaged CVE should get the deep analysis

@@ -81,6 +81,7 @@ type ImpactAssessment struct {
 	Coverage              string             `json:"coverage,omitempty"`
 	CoverageClass         string             `json:"coverageClass,omitempty"` // triage: network, web, file, endpoint, none
 	CoverageProbabilities map[string]float64 `json:"coverageProbabilities,omitempty"`
+	VendorCloud           float64            `json:"vendorCloud,omitempty"` // triage: P(vendor-operated cloud service)
 	// Pending marks a triage standout waiting for its deep analysis; it isn't shown
 	Pending bool `json:"pending,omitempty"`
 }

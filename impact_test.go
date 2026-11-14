@@ -400,6 +400,7 @@ func decisionReply(deploy, coverage map[string]float64) func(http.ResponseWriter
 		json.NewEncoder(w).Encode(map[string]any{"model": "kev-8b", "answers": map[string]any{
 			"deployment": map[string]any{"kind": "choice", "value": top(deploy), "confidence": 0.8, "probabilities": deploy},
 			"coverage":   map[string]any{"kind": "choice", "value": top(coverage), "confidence": 0.8, "probabilities": coverage},
+			"hosting":    map[string]any{"kind": "choice", "value": "customer_installed", "confidence": 0.9, "probabilities": map[string]float64{"customer_installed": 0.9, "vendor_cloud": 0.1}},
 		}})
 	}
 }
@@ -469,6 +470,26 @@ func TestStandout(t *testing.T) {
 		if got := cfg.standout(&c.cve, res); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
+	}
+	cloud := &ImpactAssessment{Probabilities: broad, CoverageProbabilities: seen, VendorCloud: 0.8}
+	if cfg.standout(&CVE{}, cloud) {
+		t.Error("a vendor-operated cloud service should not escalate")
+	}
+}
+
+func TestDeliveryHints(t *testing.T) {
+	has := func(c CVE, want string) bool { return strings.Contains(strings.Join(deliveryHints(&c), " "), want) }
+	if !has(CVE{AttackVector: "NETWORK", Description: "In the NAS message handler, improper validation causes memory corruption"}, "radio interface") {
+		t.Error("cellular NAS bug should be flagged as radio")
+	}
+	if has(CVE{AttackVector: "NETWORK", Description: "Stack overflow in the Wi-Fi settings page of the router web interface"}, "radio interface") {
+		t.Error("a router's Wi-Fi settings page is not radio delivery")
+	}
+	if !has(CVE{AttackVector: "ADJACENT", Description: "Crafted 802.11 frames cause a heap overflow"}, "radio interface") {
+		t.Error("adjacent Wi-Fi frames should be flagged as radio")
+	}
+	if !has(CVE{AttackVector: "LOCAL", UserInteraction: "REQUIRED", CWE: "CWE-787"}, "content the victim opens") {
+		t.Error("local memory corruption with user interaction should be file delivery")
 	}
 }
 
