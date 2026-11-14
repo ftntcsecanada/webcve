@@ -99,6 +99,8 @@ type CVE struct {
 	MSRC       *MSRCInfo `json:"msrc,omitempty"`
 	CWEName    string    `json:"cweName,omitempty"`
 	CWEFromNVD bool      `json:"cweFromNvd,omitempty"`
+	// AI early-warning assessment of global impact, for critical CVEs
+	AIImpact *ImpactAssessment `json:"aiImpact,omitempty"`
 
 	// File path for cache validation
 	FilePath string `json:"-"`

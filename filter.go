@@ -28,6 +28,7 @@ type FilterRequest struct {
 	KEVAddedDays   int      `json:"kevAddedDays"` // Only KEV entries added within the last N days
 	KEVDue         string   `json:"kevDue"`       // "overdue", or N = due within the next N days
 	ChangedSince   string   `json:"changedSince"` // Published or added to KEV at/after this time (RFC 3339 or date)
+	AIImpact       []string `json:"aiImpact"`     // AI global-impact ratings: severe, high, moderate, low
 	SortBy         string   `json:"sortBy"`
 	SortDesc       bool     `json:"sortDesc"`
 	Page           int      `json:"page"`
@@ -61,6 +62,9 @@ type CVESummary struct {
 	KEVDateAdded   string    `json:"kevDateAdded,omitempty"`
 	KEVDueDate     string    `json:"kevDueDate,omitempty"`
 	KEVRansomware  string    `json:"kevKnownRansomwareCampaign,omitempty"`
+	AIImpact       string    `json:"aiImpact,omitempty"`
+	AIConfidence   string    `json:"aiConfidence,omitempty"`
+	AISummary      string    `json:"aiSummary,omitempty"`
 }
 
 // FilterResponse contains filtered results and metadata
@@ -87,6 +91,8 @@ type Facets struct {
 	Exploit      int            `json:"exploit"`
 	// Per exploit-evidence source, disjunctive with the exploit filters
 	ExploitSources map[string]int `json:"exploitSources"`
+	// Per AI global-impact rating
+	AIImpact map[string]int `json:"aiImpact"`
 }
 
 // YearCount represents CVE count for a specific year with severity breakdown
@@ -116,6 +122,7 @@ const (
 	gKEV
 	gSearch
 	gChanged
+	gImpact
 )
 
 // compiledFilter holds a FilterRequest normalized for fast matching
@@ -127,6 +134,7 @@ type compiledFilter struct {
 	attackVectors map[string]bool
 	cwe           string
 	evidenceMask  uint8
+	impacts       map[string]bool
 	kevSince      string
 	dueFrom       string
 	dueTo         string
@@ -140,7 +148,7 @@ type compiledFilter struct {
 	textProducts []string
 }
 
-var fieldTermRe = regexp.MustCompile(`(?i)\b(vendor|product|cwe|sev|severity|kev|exploit|year|epss|av):("([^"]*)"|(\S+))`)
+var fieldTermRe = regexp.MustCompile(`(?i)\b(vendor|product|cwe|sev|severity|kev|exploit|year|epss|av|impact):("([^"]*)"|(\S+))`)
 
 // compileFilter normalizes req against ds, resolving search text to candidate docs
 func compileFilter(ds *Dataset, req FilterRequest) *compiledFilter {
@@ -181,6 +189,8 @@ func compileFilter(ds *Dataset, req FilterRequest) *compiledFilter {
 			if v, ok := parseEPSS(val); ok {
 				req.EPSSMin = &v
 			}
+		case "impact":
+			req.AIImpact = append(req.AIImpact, lv)
 		}
 		return " "
 	})
@@ -208,6 +218,12 @@ func compileFilter(ds *Dataset, req FilterRequest) *compiledFilter {
 			if s.Name == name {
 				f.evidenceMask |= s.Bit
 			}
+		}
+	}
+	if len(req.AIImpact) > 0 {
+		f.impacts = make(map[string]bool)
+		for _, r := range req.AIImpact {
+			f.impacts[strings.ToLower(strings.TrimSpace(r))] = true
 		}
 	}
 	if len(req.AttackVectors) > 0 {
@@ -419,6 +435,9 @@ func (ds *Dataset) failedGroups(i int, f *compiledFilter) int {
 	if !f.changedTime.IsZero() && cve.DatePublished.Before(f.changedTime) && (!cve.InKEV || cve.KEVDateAdded < f.changedDate) {
 		failed |= gChanged
 	}
+	if f.impacts != nil && (cve.AIImpact == nil || !f.impacts[cve.AIImpact.Rating]) {
+		failed |= gImpact
+	}
 	return failed
 }
 
@@ -428,7 +447,7 @@ func (ds *Dataset) filterCVEs(f *compiledFilter, withFacets bool) ([]int, *Filte
 	matches := make([]int, 0, 1024)
 
 	resp := &FilterResponse{
-		Facets: Facets{Severity: map[string]int{}, AttackVector: map[string]int{}, ExploitSources: map[string]int{}},
+		Facets: Facets{Severity: map[string]int{}, AttackVector: map[string]int{}, ExploitSources: map[string]int{}, AIImpact: map[string]int{}},
 	}
 	years := map[int]*YearCount{}
 	kevMonths := map[string]int{}
@@ -470,6 +489,9 @@ func (ds *Dataset) filterCVEs(f *compiledFilter, withFacets bool) ([]int, *Filte
 					resp.Facets.ExploitSources[s.Name]++
 				}
 			}
+		}
+		if failed&^gImpact == 0 && cve.AIImpact != nil {
+			resp.Facets.AIImpact[cve.AIImpact.Rating]++
 		}
 		if failed&^gYear == 0 && cve.Year > 0 {
 			yc := years[cve.Year]
@@ -542,7 +564,7 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 		desc = strings.ToValidUTF8(desc[:320], "") + "…"
 	}
 
-	return CVESummary{
+	s := CVESummary{
 		ID:             cve.ID,
 		Year:           cve.Year,
 		Vendor:         vendor,
@@ -568,6 +590,11 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 		KEVDueDate:     cve.KEVDueDate,
 		KEVRansomware:  cve.KEVKnownRansomwareCampaign,
 	}
+	if cve.AIImpact != nil {
+		s.AIImpact, s.AIConfidence = cve.AIImpact.Rating, cve.AIImpact.Confidence
+		s.AISummary = truncate(cve.AIImpact.Summary, 400)
+	}
+	return s
 }
 
 // sortIndexes sorts CVE indexes ascending by the given field, with CVE ID as tiebreaker
@@ -593,6 +620,11 @@ func sortIndexes(cves []CVE, idx []int, sortBy string) {
 			return compareFloat(a.BaseScore, b.BaseScore)
 		case "epss":
 			return compareFloat(a.EPSS, b.EPSS)
+		case "aiImpact":
+			if d := compareFloat(impactSortValue(a.AIImpact), impactSortValue(b.AIImpact)); d != 0 {
+				return d
+			}
+			return compareFloat(a.BaseScore, b.BaseScore)
 		case "kevDateAdded":
 			return strings.Compare(a.KEVDateAdded, b.KEVDateAdded)
 		case "kevDueDate":

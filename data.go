@@ -69,6 +69,7 @@ type App struct {
 	partialETags map[string]string
 
 	alerts *Alerter
+	impact *Assessor
 	client *http.Client
 	board  *statusBoard
 }
@@ -97,6 +98,7 @@ func newApp() *App {
 		partialETags: map[string]string{},
 		board:        newStatusBoard(),
 	}
+	app.impact = newAssessor(app)
 	app.status.Store("starting")
 	return app
 }
@@ -150,6 +152,7 @@ func (app *App) bootstrap() {
 	}
 
 	app.status.Store("loading")
+	app.enr.AIImpact = app.impact.snapshot()
 	cves, err := loadCVEs()
 	if err != nil {
 		logf("Error loading CVEs: %v", err)
@@ -178,6 +181,8 @@ func (app *App) bootstrap() {
 	logf("Ready: %d CVEs (%d KEV, %d with EPSS)", ds.stats.TotalCVEs, ds.stats.TotalKEV, ds.stats.WithEPSS)
 
 	go app.rebuilder()
+	app.impact.start()
+	go app.impact.scan(ds)
 	if noUpdates {
 		// Still apply whatever source data is already on disk
 		for _, s := range app.sources() {
@@ -234,6 +239,8 @@ func (app *App) publish(ds *Dataset) {
 	app.status.Store("ready")
 	if prev != nil {
 		app.alerts.notify(prev, ds)
+		// Queue critical CVEs that are new or whose threat signals changed
+		go app.impact.scan(ds)
 	}
 }
 
@@ -243,6 +250,7 @@ func (app *App) rebuild() {
 	if cur == nil {
 		return
 	}
+	app.enr.AIImpact = app.impact.snapshot()
 	app.publish(buildDataset(slices.Clone(cur.CVEs), &app.enr))
 }
 

@@ -247,7 +247,8 @@ const exportLimit = 10000
 var exportHeaders = []string{
 	"CVE ID", "Year", "Vendor", "Product", "Title", "Severity", "Score", "CVSS Version", "Attack Vector",
 	"CVSS Vector", "EPSS", "EPSS Percentile", "Exploit Evidence", "CWE", "Published", "Updated",
-	"In KEV", "KEV Date Added", "KEV Due Date", "KEV Required Action", "KEV Ransomware", "Description",
+	"In KEV", "KEV Date Added", "KEV Due Date", "KEV Required Action", "KEV Ransomware",
+	"AI Global Impact", "AI Confidence", "AI Assessment", "Description",
 }
 
 func exportRow(cve *CVE) []any {
@@ -265,11 +266,16 @@ func exportRow(cve *CVE) []any {
 		}
 		return ""
 	}
+	aiRating, aiConfidence, aiSummary := "", "", ""
+	if a := cve.AIImpact; a != nil {
+		aiRating, aiConfidence, aiSummary = a.Rating, a.Confidence, a.Summary
+	}
 	return []any{
 		cve.ID, cve.Year, cve.Vendor, cve.Product, title, cve.BaseSeverity, cve.BaseScore, cve.CvssVersion,
 		normalizeAttackVector(cve.AttackVector), cve.VectorString, cve.EPSS, cve.EPSSPercentile, yesNo(cve.PublicExploit),
 		cve.CWE, cve.DatePublished.Format("2006-01-02"), cve.DateUpdated.Format("2006-01-02"),
-		yesNo(cve.InKEV), cve.KEVDateAdded, cve.KEVDueDate, cve.KEVRequiredAction, cve.KEVKnownRansomwareCampaign, desc,
+		yesNo(cve.InKEV), cve.KEVDateAdded, cve.KEVDueDate, cve.KEVRequiredAction, cve.KEVKnownRansomwareCampaign,
+		aiRating, aiConfidence, aiSummary, desc,
 	}
 }
 

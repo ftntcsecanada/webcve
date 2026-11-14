@@ -311,6 +311,24 @@ button {
   background: var(--warn-soft);
   color: var(--warn);
 }
+/* AI global-impact ratings: elevated ratings are solid so they outrank every other badge */
+.badge.ai-severe {
+  background: var(--sev-critical);
+  color: var(--on-sev);
+}
+.badge.ai-high {
+  background: var(--sev-high);
+  color: var(--on-sev);
+}
+.badge.ai-moderate {
+  background: var(--surface-hover);
+  color: var(--text-2);
+}
+.badge.ai-low {
+  background: transparent;
+  color: var(--text-3);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
 
 .muted {
   color: var(--text-3);

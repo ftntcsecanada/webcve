@@ -3,7 +3,7 @@ import { computed } from "vue";
 import Icon from "./Icon.vue";
 import Combobox from "./Combobox.vue";
 import { state, results, saved, toggleIn, resetFilters, activeFilterCount, openSaved, removeSaved } from "../lib/store.js";
-import { SEVERITIES, SEVERITY_LABEL, ATTACK_VECTORS, ATTACK_VECTOR_LABEL, EXPLOIT_SOURCES, fmtNum } from "../lib/format.js";
+import { SEVERITIES, SEVERITY_LABEL, ATTACK_VECTORS, ATTACK_VECTOR_LABEL, EXPLOIT_SOURCES, IMPACT_RATINGS, IMPACT_LABEL, fmtNum } from "../lib/format.js";
 import { explain } from "../lib/glossary.js";
 
 defineEmits(["close"]);
@@ -64,6 +64,7 @@ function setScore(min, max) {
 
 const maxSev = computed(() => Math.max(1, ...SEVERITIES.map((s) => results.facets.severity?.[s] || 0)));
 const maxEx = computed(() => Math.max(1, ...EXPLOIT_SOURCES.map(([k]) => results.facets.exploitSources?.[k] || 0)));
+const maxAi = computed(() => Math.max(1, ...IMPACT_RATINGS.map((r) => results.facets.aiImpact?.[r] || 0)));
 const maxAv = computed(() => Math.max(1, ...ATTACK_VECTORS.map((a) => results.facets.attackVector?.[a] || 0)));
 
 function onNumber(key, e) {
@@ -94,6 +95,26 @@ function onNumber(key, e) {
           <button class="saved-x" :aria-label="`Delete saved search ${s.name}`" @click="removeSaved(s.id)"><Icon name="x" :size="12" /></button>
         </li>
       </ul>
+    </section>
+
+    <section class="group">
+      <h3><Term k="AI impact">AI early warning</Term></h3>
+      <div class="facets">
+        <button
+          v-for="r in IMPACT_RATINGS"
+          :key="r"
+          class="facet"
+          :class="{ on: f.aiImpact.includes(r) }"
+          :aria-pressed="f.aiImpact.includes(r)"
+          @click="toggleIn(f.aiImpact, r)"
+        >
+          <span class="check"><Icon v-if="f.aiImpact.includes(r)" name="check" :size="11" /></span>
+          <span class="ai-dot" :class="r" />
+          <span class="facet-label">{{ IMPACT_LABEL[r] }} global risk</span>
+          <span class="count num">{{ fmtNum(results.facets.aiImpact?.[r]) }}</span>
+          <span class="bar" :style="{ width: ((results.facets.aiImpact?.[r] || 0) / maxAi) * 100 + '%' }" />
+        </button>
+      </div>
     </section>
 
     <section v-if="!isKev" class="group">
@@ -527,5 +548,22 @@ h3 {
   .close {
     display: inline-flex;
   }
+}
+.ai-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--sev-none);
+}
+.ai-dot.severe {
+  background: var(--sev-critical);
+}
+.ai-dot.high {
+  background: var(--sev-high);
+}
+.ai-dot.low {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 </style>

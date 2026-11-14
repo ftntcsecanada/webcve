@@ -7,6 +7,14 @@ catalog, exploit availability and exploit-likelihood scores.
   and shows remediation due dates, ransomware use and monthly additions. The Vendors
   view compares vendors by volume, severity, KEV rate, exploit rate, Metasploit
   coverage, EPSS and median days from publication to exploitation.
+- **AI early warning.** An AI model on private infrastructure (Qwen via Bifrost) assesses every new critical CVE (CVSS 9.0+) for its
+  likelihood of heavy global impact (severe / high / moderate / low). It weighs
+  how widely the affected open source package or platform is deployed, internet
+  exposure and ease of exploitation, and it doesn't wait for exploitation
+  evidence. High and severe ratings head the main view in an Early warning
+  banner, carry a solid badge and row stripe in the table, can be filtered
+  (`impact:severe`) and sorted, and can post a webhook alert. Needs
+  `BIFROST_URL` and `BIFROST_API_KEY`; see [deploy/README.md](deploy/README.md).
 - **Prioritization signals.** CVSS (3.x primary, 4.0 alongside, NVD as fallback),
   EPSS score, percentile and 30-day trend, CISA SSVC decision points, Microsoft
   exploitability ratings, and exploit evidence with sources and links (Metasploit,
@@ -16,7 +24,7 @@ catalog, exploit availability and exploit-likelihood scores.
 - **Faceted filters** with live counts: severity, exploit evidence, EPSS, CVSS
   score, attack vector, year, vendor, product, CWE, KEV due window.
 - **Search** with prefix matching, `"exact phrases"` and field syntax:
-  `vendor:fortinet sev:critical kev:yes epss:>10% cwe:79 year:2024`.
+  `vendor:fortinet sev:critical kev:yes epss:>10% cwe:79 year:2024 impact:severe`.
 - **Saved searches** in the sidebar, with a count of CVEs published or added to
   KEV since you last opened each one.
 - **Detail drawer** with CVSS vector breakdown, KEV callout, related CVEs, grouped

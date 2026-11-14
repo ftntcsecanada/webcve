@@ -6,6 +6,8 @@ export const GLOSSARY = {
   "CVSS 4.0": "The newest version of CVSS (2023). Scores aren't directly comparable with CVSS 3.x.",
   EPSS: "Exploit Prediction Scoring System (FIRST): the estimated probability that this CVE is exploited in the next 30 days. Updated daily.",
   percentile: "How this CVE's EPSS score ranks against every other scored CVE. 95th percentile = higher than 95% of CVEs.",
+  "AI impact":
+    "An early-warning judgment by an AI model (run on private infrastructure) of whether this critical CVE is likely to cause heavy global impact in the next 90 days: mass exploitation or emergency patching across many organizations. It weighs how widely the affected open source package or platform is deployed, internet exposure and ease of exploitation. It doesn't wait for exploitation evidence. Severe: likely a global-scale event. High: serious chance of broad impact. Moderate: real but bounded. Low: unlikely to spread. AI-generated, so verify before acting.",
   KEV: "Known Exploited Vulnerabilities: CISA's catalog of CVEs with reliable evidence of exploitation in the wild.",
   CISA: "Cybersecurity and Infrastructure Security Agency, the US agency that maintains the KEV catalog.",
   "BOD 22-01": "Binding Operational Directive 22-01: requires US federal agencies to fix KEV entries by their due date. Widely used as a benchmark elsewhere.",

@@ -116,7 +116,12 @@ func (a *Alerter) notify(prev, next *Dataset) {
 			line(i, "•")
 		}
 	}
-	body, _ := json.Marshal(map[string]string{"text": b.String()})
+	a.post(b.String())
+}
+
+// post sends text to the webhook in the background
+func (a *Alerter) post(text string) {
+	body, _ := json.Marshal(map[string]string{"text": text})
 	go func() {
 		resp, err := a.client.Post(a.webhook, "application/json", bytes.NewReader(body))
 		if err != nil {

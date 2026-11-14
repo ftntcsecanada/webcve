@@ -16,6 +16,13 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - WEBCVE_SIGLAB_URL=${WEBCVE_SIGLAB_URL:-}
       - WEBCVE_SIGLAB_TOKEN=${WEBCVE_SIGLAB_TOKEN:-}
+      - BIFROST_URL=${BIFROST_URL:-}
+      - BIFROST_API_KEY=${BIFROST_API_KEY:-}
+      - WEBCVE_AI_ASSESSMENTS=${WEBCVE_AI_ASSESSMENTS:-}
+      - WEBCVE_AI_MODEL=${WEBCVE_AI_MODEL:-}
+      - WEBCVE_AI_MIN_SCORE=${WEBCVE_AI_MIN_SCORE:-}
+      - WEBCVE_AI_WINDOW_DAYS=${WEBCVE_AI_WINDOW_DAYS:-}
+      - WEBCVE_AI_DAILY_LIMIT=${WEBCVE_AI_DAILY_LIMIT:-}
     volumes:
       - /data/webcve/cves:/app/cves
       - /data/webcve/kev:/app/kev

@@ -24,6 +24,7 @@ type RadarEvent struct {
 	Severity string  `json:"severity"`
 	EPSS     float64 `json:"epss"`
 	Ransom   bool    `json:"ransomware,omitempty"`
+	AIImpact string  `json:"aiImpact,omitempty"`
 }
 
 type radarRequest struct {
@@ -90,6 +91,9 @@ func (app *App) handleRadar(c echo.Context) error {
 			CVE: cve.ID, Vendor: vendor, Title: summaryTitle(cve),
 			Score: cve.BaseScore, Severity: cve.BaseSeverity, EPSS: cve.EPSS,
 			Ransom: cve.KEVKnownRansomwareCampaign == "Known",
+		}
+		if cve.AIImpact != nil {
+			base.AIImpact = cve.AIImpact.Rating
 		}
 		cnt := counts[vendor]
 		if cnt == nil {

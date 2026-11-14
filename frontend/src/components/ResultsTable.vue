@@ -1,6 +1,7 @@
 <script setup>
 import { computed, watch, nextTick } from "vue";
 import Icon from "./Icon.vue";
+import ImpactBadge from "./ImpactBadge.vue";
 import { state, results, addUnique } from "../lib/store.js";
 import {
   SEVERITY_LABEL,
@@ -130,7 +131,7 @@ watch(
           v-for="(cve, i) in results.cves"
           :key="cve.id"
           :data-row="i"
-          :class="{ cursor: i === cursor, selected: state.selectedId === cve.id }"
+          :class="{ cursor: i === cursor, selected: state.selectedId === cve.id, [`ai-${cve.aiImpact}`]: cve.aiImpact }"
           @click="emit('update:cursor', i), emit('open', cve.id)"
         >
           <td class="c-score">
@@ -152,6 +153,7 @@ watch(
           <td class="c-id">
             <a class="id mono" :href="`?cve=${cve.id}`" @click.prevent>{{ cve.id }}</a>
             <div class="id-badges">
+              <ImpactBadge :rating="cve.aiImpact" :confidence="cve.aiConfidence" compact />
               <span v-if="cve.inKEV && !isKev" v-tip="explain('KEV')" class="badge kev">KEV</span>
               <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" v-tip="explain('Ransomware')" class="badge danger">
                 <Icon name="lock" :size="11" />Ransomware
@@ -263,6 +265,13 @@ tbody tr {
 }
 tbody tr:hover td {
   background: var(--surface-hover);
+}
+/* Elevated AI global-impact ratings carry a stripe, so they stand out while scrolling */
+tbody tr.ai-severe td:first-child {
+  box-shadow: inset 4px 0 0 var(--sev-critical);
+}
+tbody tr.ai-high td:first-child {
+  box-shadow: inset 4px 0 0 var(--sev-high);
 }
 tbody tr.cursor td {
   background: var(--surface-hover);

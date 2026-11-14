@@ -62,6 +62,7 @@ type Enrichment struct {
 	EUVD            map[string]euvdEntry
 	MSRC            map[string]*MSRCInfo
 	CWENames        map[string]string
+	AIImpact        map[string]*ImpactAssessment
 }
 
 // buildDataset enriches cves (which it takes ownership of) and builds all indexes
@@ -162,6 +163,7 @@ func applyEnrichment(cve *CVE, enr *Enrichment) {
 	cve.MSRC = enr.MSRC[cve.ID]
 
 	cve.CWEName = enr.CWENames[cve.CWE]
+	cve.AIImpact = enr.AIImpact[cve.ID]
 	setExploitEvidence(cve)
 }
 

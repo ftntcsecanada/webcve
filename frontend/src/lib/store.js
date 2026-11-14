@@ -18,6 +18,7 @@ export function emptyFilters() {
     epssMin: null,
     exploit: false,
     exploitSources: [],
+    aiImpact: [],
     vendors: [],
     products: [],
     cwe: "",
@@ -37,6 +38,7 @@ export const SORTS = {
     ["dateUpdated", "Updated"],
     ["baseScore", "CVSS score"],
     ["epss", "EPSS (exploit likelihood)"],
+    ["aiImpact", "AI global-impact risk"],
     ["id", "CVE ID"],
     ["vendor", "Vendor"],
   ],
@@ -45,6 +47,7 @@ export const SORTS = {
     ["kevDueDate", "Remediation due"],
     ["baseScore", "CVSS score"],
     ["epss", "EPSS (exploit likelihood)"],
+    ["aiImpact", "AI global-impact risk"],
     ["datePublished", "Published"],
     ["id", "CVE ID"],
     ["vendor", "Vendor"],
@@ -85,7 +88,7 @@ export const results = reactive({
   cves: [],
   total: 0,
   totalPages: 0,
-  facets: { severity: {}, attackVector: {}, kev: 0, ransomware: 0, exploit: 0, exploitSources: {} },
+  facets: { severity: {}, attackVector: {}, kev: 0, ransomware: 0, exploit: 0, exploitSources: {}, aiImpact: {} },
   yearCounts: [],
   kevMonths: [],
   tookMs: 0,
@@ -98,7 +101,7 @@ export function activeFilterCount() {
   const f = state.filters;
   let n = 0;
   if (f.q) n++;
-  n += f.severities.length + f.attackVectors.length + f.vendors.length + f.products.length + f.exploitSources.length;
+  n += f.severities.length + f.attackVectors.length + f.vendors.length + f.products.length + f.exploitSources.length + f.aiImpact.length;
   if (f.kevOnly && state.view !== "kev") n++;
   for (const k of ["ransomware", "kevDays", "kevDue", "cwe", "exploit", "since"]) if (f[k]) n++;
   if (f.yearFrom || f.yearTo) n++;
@@ -149,6 +152,7 @@ function buildRequest(view, f) {
   if (f.epssMin != null) req.epssMin = f.epssMin;
   if (f.exploit) req.publicExploit = true;
   if (f.exploitSources.length) req.exploitSources = f.exploitSources;
+  if (f.aiImpact.length) req.aiImpact = f.aiImpact;
   if (view === "kev" || f.kevOnly) req.inKEV = true;
   if (view === "kev" && f.ransomware) req.ransomware = true;
   if (view === "kev" && f.kevDays) req.kevAddedDays = f.kevDays;
@@ -291,6 +295,7 @@ function toQuery(view, f, sort, extra = {}) {
   if (f.epssMin != null) p.set("epss", f.epssMin);
   if (f.exploit) p.set("x", "1");
   f.exploitSources.forEach((v) => p.append("xs", v));
+  f.aiImpact.forEach((v) => p.append("ai", v));
   if (f.since) p.set("since", f.since);
   if (sort) {
     const def = VIEWS[view].defaultSort;
@@ -346,6 +351,7 @@ export function fromQuery(qs) {
   f.epssMin = num("epss");
   f.exploit = p.get("x") === "1";
   f.exploitSources = p.getAll("xs");
+  f.aiImpact = p.getAll("ai");
   f.since = p.get("since") || "";
   const sort = p.has("sort") ? { by: p.get("sort"), desc: p.get("dir") !== "asc" } : { ...VIEWS[view].defaultSort };
   return { view, filters: f, sort, page: num("page") || 1, cve: p.get("cve") };

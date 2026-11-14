@@ -67,6 +67,37 @@ The proxy exposes lab readiness, durable job state, event cursors, submission,
 and cancellation. After changing these values, recreate the container with
 `docker-compose up -d`.
 
+### AI early-warning assessments
+
+Setting `BIFROST_URL` and `BIFROST_API_KEY` turns on AI global-impact
+assessments. They run on the private Bifrost gateway (OpenAI-compatible API,
+default model `flgpu-openai/qwen3.8-27b-openai`), so CVE data stays on our
+infrastructure. Each published CVE with CVSS 9.0 or higher that was published,
+or added to KEV, in the last 30 days gets an assessment: a rating of
+`severe`, `high`, `moderate` or `low` for its likelihood of heavy global impact,
+with the reasoning behind it. A CVE is reassessed when it's added to KEV, a public
+exploit appears, its SSVC exploitation status changes or its EPSS jumps a band.
+Results are kept in `/data/webcve/kev/ai-impact.json`, so restarts and redeploys
+don't pay twice. Progress and errors show on the Data sources page.
+
+```sh
+BIFROST_URL=https://...                        # gateway base URL (the container must be able to reach it)
+BIFROST_API_KEY=...                            # gateway key; both values together enable assessments
+WEBCVE_AI_MODEL=flgpu-openai/qwen3.8-27b-openai  # default
+WEBCVE_AI_MIN_SCORE=9.0                        # CVSS threshold
+WEBCVE_AI_WINDOW_DAYS=30                       # how far back to assess (the first start backfills this window)
+WEBCVE_AI_DAILY_LIMIT=200                      # load cap: assessments per UTC day
+WEBCVE_AI_ASSESSMENTS=0                        # turn off without removing the key
+```
+
+Expect about 10 to 20 assessments a day, at roughly 10 to 30 seconds each, plus a
+one-time backfill of roughly 300 to 500 on first start, which the daily limit
+spreads over a couple of days. The model works from the CVE record and this
+platform's enrichment (KEV, EPSS, exploits, OSV packages, affected products) plus
+its own knowledge; it does not browse the web. When
+alerts are on, a fresh critical CVE rated high or severe, or an existing rating
+that escalates to one of those, posts an "AI early warning" to the webhook.
+
 Alerts post Slack-compatible `{"text": ...}` JSON for new KEV entries and new
 high-severity CVEs from watched vendors. Restart with `docker-compose up -d`
 after changing `.env`.

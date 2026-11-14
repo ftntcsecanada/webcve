@@ -1,0 +1,386 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestImpactCandidate(t *testing.T) {
+	cfg := impactConfig{minScore: 9.0, window: 30 * 24 * time.Hour}
+	now := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+	recent, old := now.AddDate(0, 0, -3), now.AddDate(-2, 0, 0)
+	cases := []struct {
+		name string
+		cve  CVE
+		want bool
+	}{
+		{"new critical", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: recent}, true},
+		{"new high", CVE{State: "PUBLISHED", BaseScore: 8.8, DatePublished: recent}, false},
+		{"old critical", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: old}, false},
+		{"old critical newly in KEV", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: old, InKEV: true, KEVDateAdded: "2026-11-10"}, true},
+		{"old critical, old KEV", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: old, InKEV: true, KEVDateAdded: "2024-01-01"}, false},
+		{"rejected", CVE{State: "REJECTED", BaseScore: 9.8, DatePublished: recent}, false},
+		{"KEV placeholder", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: recent, KEVOnly: true}, false},
+	}
+	for _, c := range cases {
+		if got := cfg.impactCandidate(&c.cve, now); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestNeedsAssessment(t *testing.T) {
+	now := time.Now()
+	cve := &CVE{BaseScore: 9.8, EPSS: 0.02}
+	sig := impactSignals(cve)
+	if !needsAssessment(cve, nil, nil, now) {
+		t.Error("unassessed CVE should need assessment")
+	}
+	fresh := &ImpactAssessment{Signals: sig, AssessedAt: now.Add(-48 * time.Hour)}
+	if needsAssessment(cve, fresh, nil, now) {
+		t.Error("unchanged signals should not trigger reassessment")
+	}
+	// Daily EPSS drift within a bucket is not a signal change
+	cve.EPSS = 0.05
+	if needsAssessment(cve, fresh, nil, now) {
+		t.Error("EPSS drift within a bucket should not trigger reassessment")
+	}
+	cve.InKEV = true
+	if !needsAssessment(cve, fresh, nil, now) {
+		t.Error("KEV listing should trigger reassessment")
+	}
+	recent := &ImpactAssessment{Signals: sig, AssessedAt: now.Add(-time.Hour)}
+	if needsAssessment(cve, recent, nil, now) {
+		t.Error("an assessment under a day old should not be redone")
+	}
+	failed := &impactFailure{At: now.Add(-time.Hour), Signals: impactSignals(cve)}
+	if needsAssessment(cve, nil, failed, now) {
+		t.Error("a recent failure with the same signals should back off")
+	}
+	failed.At = now.Add(-impactRetryAfter - time.Minute)
+	if !needsAssessment(cve, nil, failed, now) {
+		t.Error("a failure should be retried after the backoff")
+	}
+}
+
+func TestDecodeImpactOutput(t *testing.T) {
+	out, err := decodeImpactOutput(`{"rating":"high","confidence":"medium","summary":"Pre-auth RCE in a common VPN.","drivers":["internet-facing"],"exposure":"Tens of thousands exposed.","watch_for":"Public PoC."}`)
+	if err != nil || out.Rating != "high" || out.WatchFor != "Public PoC." {
+		t.Fatalf("got %+v, %v", out, err)
+	}
+	if _, err := decodeImpactOutput(`{"rating":"catastrophic","confidence":"high","summary":"x"}`); err == nil {
+		t.Error("unknown rating should be rejected")
+	}
+	if _, err := decodeImpactOutput(`not json`); err == nil {
+		t.Error("malformed output should be rejected")
+	}
+	out, _ = decodeImpactOutput(`{"rating":"low","confidence":"certain","summary":"x"}`)
+	if out.Confidence != "low" {
+		t.Errorf("unknown confidence should fall back to low, got %q", out.Confidence)
+	}
+}
+
+func TestImpactInputIsBoundedJSON(t *testing.T) {
+	cve := &CVE{ID: "CVE-2026-0001", Description: strings.Repeat("x", 10000), InKEV: true, KEVDateAdded: "2026-11-01"}
+	for range 200 {
+		cve.References = append(cve.References, Reference{URL: "https://example.com"})
+	}
+	var in map[string]any
+	if err := json.Unmarshal([]byte(impactInput(cve, time.Now())), &in); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(in["references"].([]any)); n != 25 {
+		t.Errorf("references not capped: %d", n)
+	}
+	if len(in["description"].(string)) > 4010 {
+		t.Error("description not truncated")
+	}
+	if in["cisaKEV"] == nil {
+		t.Error("KEV context missing")
+	}
+}
+
+func TestFilterAndSortByAIImpact(t *testing.T) {
+	ds := testDataset()
+	ds.CVEs[ds.byID["CVE-2024-0001"]].AIImpact = &ImpactAssessment{Rating: "severe", Confidence: "high"}
+	ds.CVEs[ds.byID["CVE-2024-0002"]].AIImpact = &ImpactAssessment{Rating: "moderate", Confidence: "medium"}
+
+	if got := ids(ds, FilterRequest{AIImpact: []string{"severe", "high"}}); !slices.Equal(got, []string{"CVE-2024-0001"}) {
+		t.Errorf("rating filter: %v", got)
+	}
+	if got := ids(ds, FilterRequest{Search: "impact:moderate"}); !slices.Equal(got, []string{"CVE-2024-0002"}) {
+		t.Errorf("impact: syntax: %v", got)
+	}
+	// Facets ignore the rating filter itself so other ratings stay selectable
+	_, resp := ds.filterCVEs(compileFilter(ds, FilterRequest{AIImpact: []string{"severe"}}), true)
+	if resp.Facets.AIImpact["severe"] != 1 || resp.Facets.AIImpact["moderate"] != 1 {
+		t.Errorf("facets: %v", resp.Facets.AIImpact)
+	}
+	matches, _ := ds.filterCVEs(compileFilter(ds, FilterRequest{SortBy: "aiImpact", SortDesc: true}), false)
+	if ds.CVEs[matches[0]].ID != "CVE-2024-0001" || ds.CVEs[matches[1]].ID != "CVE-2024-0002" {
+		t.Errorf("sort order starts %s, %s", ds.CVEs[matches[0]].ID, ds.CVEs[matches[1]].ID)
+	}
+	if s := ds.summarize(matches[0], compileFilter(ds, FilterRequest{})); s.AIImpact != "severe" || s.AIConfidence != "high" {
+		t.Errorf("summary: %+v", s)
+	}
+}
+
+func TestEnrichmentAppliesAIImpact(t *testing.T) {
+	a := &ImpactAssessment{Rating: "high"}
+	cve := CVE{ID: "CVE-2024-0001"}
+	applyEnrichment(&cve, &Enrichment{AIImpact: map[string]*ImpactAssessment{"CVE-2024-0001": a}})
+	if cve.AIImpact != a {
+		t.Fatal("assessment not applied")
+	}
+	applyEnrichment(&cve, &Enrichment{})
+	if cve.AIImpact != nil {
+		t.Fatal("stale assessment kept after rebuild")
+	}
+}
+
+func TestEarlyWarningAlerts(t *testing.T) {
+	var mu sync.Mutex
+	var posts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		posts = append(posts, body["text"])
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	al := &Alerter{webhook: srv.URL, client: srv.Client()}
+	fresh := &CVE{ID: "CVE-2026-1", DatePublished: time.Now().Add(-time.Hour), BaseScore: 9.8}
+	old := &CVE{ID: "CVE-2026-2", DatePublished: time.Now().AddDate(0, 0, -20), BaseScore: 9.8}
+
+	al.earlyWarning(fresh, nil, &ImpactAssessment{Rating: "severe", Summary: "s"})                               // alert
+	al.earlyWarning(fresh, nil, &ImpactAssessment{Rating: "moderate", Summary: "s"})                             // below threshold
+	al.earlyWarning(old, nil, &ImpactAssessment{Rating: "high", Summary: "s"})                                   // backfill: no alert
+	al.earlyWarning(old, &ImpactAssessment{Rating: "moderate"}, &ImpactAssessment{Rating: "high", Summary: "s"}) // escalation
+	al.earlyWarning(old, &ImpactAssessment{Rating: "severe"}, &ImpactAssessment{Rating: "severe", Summary: "s"}) // no change
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(posts)
+		mu.Unlock()
+		if n >= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(posts) != 2 {
+		t.Fatalf("want 2 alerts, got %d: %q", len(posts), posts)
+	}
+	joined := strings.Join(posts, "\n")
+	if !strings.Contains(joined, "CVE-2026-1") || !strings.Contains(joined, "raised to HIGH (was moderate)") {
+		t.Errorf("unexpected alerts: %q", posts)
+	}
+}
+
+// TestLiveCalibration calls the real API on day-zero scenarios: fictional CVE
+// IDs published today, with no KEV, EPSS or exploit signals, so the model can't
+// lean on memory or exploitation evidence. Run with WEBCVE_LIVE_TEST=1 and BIFROST_URL/BIFROST_API_KEY set.
+func TestLiveCalibration(t *testing.T) {
+	if os.Getenv("WEBCVE_LIVE_TEST") == "" {
+		t.Skip("set WEBCVE_LIVE_TEST=1 to call the Bifrost gateway")
+	}
+	t.Setenv("WEBCVE_AI_ASSESSMENTS", "1")
+	a := newAssessor(&App{board: newStatusBoard()})
+	if !a.cfg.enabled {
+		t.Fatal("set BIFROST_URL and BIFROST_API_KEY")
+	}
+	now := time.Now()
+	network := func(c CVE) CVE {
+		c.State, c.DatePublished, c.CvssVersion, c.BaseScore, c.BaseSeverity = "PUBLISHED", now, "3.1", 9.8, "CRITICAL"
+		c.AttackVector, c.AttackComplexity, c.PrivilegesRequired, c.UserInteraction = "NETWORK", "LOW", "NONE", "NONE"
+		c.VectorString = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+		return c
+	}
+	cases := []struct {
+		cve     CVE
+		atLeast string // minimum acceptable rating
+		atMost  string // maximum acceptable rating
+	}{
+		{network(CVE{ID: "CVE-2026-90001", Title: "OpenSSL: heap overflow in TLS 1.3 server handshake allows remote code execution",
+			Description:      "A heap buffer overflow in the TLS 1.3 key share processing of OpenSSL 3.0 through 3.5 allows an unauthenticated remote attacker to execute arbitrary code on any server that accepts TLS 1.3 connections, in the default configuration.",
+			AffectedProducts: []AffectedProduct{{Vendor: "OpenSSL", Product: "OpenSSL", Versions: "3.0.0 - 3.5.4"}}, CWE: "CWE-122",
+			Packages: []PackageFix{{Ecosystem: "Debian", Name: "openssl"}, {Ecosystem: "Alpine", Name: "openssl"}, {Ecosystem: "Red Hat", Name: "openssl"}, {Ecosystem: "crates.io", Name: "openssl-src"}, {Ecosystem: "PyPI", Name: "cryptography"}}}),
+			"high", "severe"},
+		{network(CVE{ID: "CVE-2026-90002", Title: "Microsoft Exchange Server remote code execution vulnerability",
+			Description:      "Deserialization of untrusted data in Microsoft Exchange Server 2019 and Exchange Server Subscription Edition allows an unauthenticated attacker to execute code as SYSTEM over the network via a crafted request to the Outlook Web Access endpoint.",
+			AffectedProducts: []AffectedProduct{{Vendor: "Microsoft", Product: "Exchange Server 2019"}, {Vendor: "Microsoft", Product: "Exchange Server Subscription Edition"}}, CWE: "CWE-502"}),
+			"high", "severe"},
+		{network(CVE{ID: "CVE-2026-90003", Title: "jackson-databind: remote code execution through default polymorphic typing",
+			Description:      "FasterXML jackson-databind 2.x before 2.21.1 deserializes attacker-chosen classes when reading JSON with the default ObjectMapper configuration, allowing remote code execution in any application that parses untrusted JSON.",
+			AffectedProducts: []AffectedProduct{{Vendor: "FasterXML", Product: "jackson-databind"}}, CWE: "CWE-502",
+			Packages: []PackageFix{{Ecosystem: "Maven", Name: "com.fasterxml.jackson.core:jackson-databind"}, {Ecosystem: "Debian", Name: "jackson-databind"}, {Ecosystem: "Red Hat", Name: "jackson-databind"}}}),
+			"high", "severe"},
+		{network(CVE{ID: "CVE-2026-90004", Title: "Simple Event Booking Lite plugin for WordPress: unauthenticated SQL injection",
+			Description:      "The Simple Event Booking Lite plugin for WordPress (about 2,000 active installations) is vulnerable to SQL injection via the 'event_id' parameter in versions up to 1.4.2, allowing unauthenticated attackers to extract database contents.",
+			AffectedProducts: []AffectedProduct{{Vendor: "seblite", Product: "Simple Event Booking Lite"}}, CWE: "CWE-89"}),
+			"low", "moderate"},
+		{network(CVE{ID: "CVE-2026-90005", Title: "Tenda AC9 V15.03.05.19 stack overflow in /goform/SetSysTimeCfg",
+			Description:      "Tenda AC9 firmware V15.03.05.19 contains a stack-based buffer overflow in the time parameter of /goform/SetSysTimeCfg, reachable from the web management interface, leading to remote code execution.",
+			AffectedProducts: []AffectedProduct{{Vendor: "Tenda", Product: "AC9"}}, CWE: "CWE-121"}),
+			"low", "moderate"},
+	}
+	for _, c := range cases {
+		t.Run(c.cve.ID, func(t *testing.T) {
+			t.Parallel()
+			start := time.Now()
+			res, err := a.assess(&c.cve)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("%s -> %s (%s confidence, %s) in %s\n%s\nDrivers: %s",
+				c.cve.Title, strings.ToUpper(res.Rating), res.Confidence, res.Model, time.Since(start).Round(time.Second),
+				res.Summary, strings.Join(res.Drivers, " | "))
+			if r := impactRank(res.Rating); r < impactRank(c.atLeast) || r > impactRank(c.atMost) {
+				t.Errorf("rated %s, want %s..%s", res.Rating, c.atLeast, c.atMost)
+			}
+		})
+	}
+}
+
+// fakeGateway serves OpenAI-compatible chat responses from a script of handlers
+func fakeGateway(t *testing.T, steps ...func(w http.ResponseWriter, body map[string]any)) (*Assessor, *int) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-key" {
+			t.Errorf("unexpected request %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		step := steps[min(calls, len(steps)-1)]
+		calls++
+		step(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	old := impactRetryDelay
+	impactRetryDelay = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { impactRetryDelay = old })
+	a := &Assessor{cfg: impactConfig{baseURL: srv.URL, apiKey: "test-key", model: impactDefaultModel}, http: srv.Client()}
+	return a, &calls
+}
+
+func chatReply(content, finish string) func(http.ResponseWriter, map[string]any) {
+	return func(w http.ResponseWriter, _ map[string]any) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"model":   "flgpu-openai/qwen3.8-27b-openai",
+			"choices": []any{map[string]any{"finish_reason": finish, "message": map[string]any{"role": "assistant", "content": content}}},
+		})
+	}
+}
+
+const goodAnswer = `{"rating":"severe","confidence":"high","summary":"Ubiquitous library.","drivers":["everywhere"],"exposure":"Most servers.","watch_for":"PoC."}`
+
+func TestBifrostAssess(t *testing.T) {
+	var sent map[string]any
+	a, calls := fakeGateway(t, func(w http.ResponseWriter, body map[string]any) {
+		sent = body
+		chatReply(goodAnswer, "stop")(w, body)
+	})
+	res, err := a.assess(&CVE{ID: "CVE-2026-1", BaseScore: 9.8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rating != "severe" || res.Model != "flgpu-openai/qwen3.8-27b-openai" || res.Signals == "" || *calls != 1 {
+		t.Errorf("got %+v after %d calls", res, *calls)
+	}
+	if sent["model"] != impactDefaultModel {
+		t.Errorf("model sent: %v", sent["model"])
+	}
+	rf, _ := sent["response_format"].(map[string]any)
+	if rf["type"] != "json_schema" {
+		t.Errorf("response_format not sent: %v", sent["response_format"])
+	}
+	msgs, _ := sent["messages"].([]any)
+	if len(msgs) != 2 || !strings.Contains(msgs[1].(map[string]any)["content"].(string), "CVE-2026-1") {
+		t.Errorf("messages: %v", msgs)
+	}
+}
+
+func TestBifrostRetriesTransientErrors(t *testing.T) {
+	a, calls := fakeGateway(t,
+		func(w http.ResponseWriter, _ map[string]any) {
+			http.Error(w, `{"error":{"message":"overloaded"}}`, 503)
+		},
+		chatReply(goodAnswer, "stop"))
+	if _, err := a.assess(&CVE{ID: "CVE-2026-1"}); err != nil || *calls != 2 {
+		t.Fatalf("err=%v calls=%d", err, *calls)
+	}
+}
+
+func TestBifrostDoesNotRetryClientErrors(t *testing.T) {
+	a, calls := fakeGateway(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":{"message":"unknown model"}}`))
+	})
+	_, err := a.assess(&CVE{ID: "CVE-2026-1"})
+	if err == nil || !strings.Contains(err.Error(), "unknown model") || *calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, *calls)
+	}
+}
+
+func TestBifrostGivesUpAfterRetries(t *testing.T) {
+	a, calls := fakeGateway(t, func(w http.ResponseWriter, _ map[string]any) { w.WriteHeader(502) })
+	if _, err := a.assess(&CVE{ID: "CVE-2026-1"}); err == nil || *calls != 3 {
+		t.Fatalf("err=%v calls=%d", err, *calls)
+	}
+}
+
+func TestBifrostTruncatedResponse(t *testing.T) {
+	a, _ := fakeGateway(t, chatReply(`{"rating":"sev`, "length"))
+	if _, err := a.assess(&CVE{ID: "CVE-2026-1"}); err == nil || !strings.Contains(err.Error(), "max_tokens") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestCleanModelJSON(t *testing.T) {
+	for _, in := range []string{
+		goodAnswer,
+		"<think>reasoning about {braces}</think>\n" + goodAnswer,
+		"```json\n" + goodAnswer + "\n```",
+		"Here is the assessment:\n" + goodAnswer + "\nHope this helps.",
+	} {
+		if out, err := decodeImpactOutput(in); err != nil || out.Rating != "severe" {
+			t.Errorf("%q: %v", in, err)
+		}
+	}
+}
+
+func TestImpactConfigFromEnv(t *testing.T) {
+	t.Setenv("WEBCVE_NO_UPDATES", "")
+	t.Setenv("WEBCVE_AI_ASSESSMENTS", "")
+	t.Setenv("BIFROST_API_KEY", "k")
+	t.Setenv("BIFROST_URL", "bifrost.example.internal/")
+	c := impactConfigFromEnv()
+	if !c.enabled || c.baseURL != "https://bifrost.example.internal" || c.model != impactDefaultModel {
+		t.Errorf("got %+v", c)
+	}
+	t.Setenv("WEBCVE_AI_ASSESSMENTS", "0")
+	if impactConfigFromEnv().enabled {
+		t.Error("WEBCVE_AI_ASSESSMENTS=0 should disable")
+	}
+	t.Setenv("WEBCVE_AI_ASSESSMENTS", "")
+	t.Setenv("BIFROST_API_KEY", "")
+	if impactConfigFromEnv().enabled {
+		t.Error("missing key should disable")
+	}
+	t.Setenv("BIFROST_API_KEY", "k")
+	t.Setenv("WEBCVE_NO_UPDATES", "1")
+	if impactConfigFromEnv().enabled {
+		t.Error("local-data mode should not call out unless asked")
+	}
+}

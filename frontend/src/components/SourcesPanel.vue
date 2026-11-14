@@ -101,7 +101,8 @@ const STATE_LABEL = { ok: "Up to date", syncing: "Updating", error: "Failing", p
             <template v-for="s in data.sources" :key="s.name">
               <tr :class="s.state">
                 <td class="src">
-                  <a :href="s.url" target="_blank" rel="noopener noreferrer" class="src-name">{{ s.label }}</a>
+                  <a v-if="s.url" :href="s.url" target="_blank" rel="noopener noreferrer" class="src-name">{{ s.label }}</a>
+                  <span v-else class="src-name">{{ s.label }}</span>
                   <div class="src-desc">{{ s.description }}</div>
                   <div class="src-int">Checked {{ s.interval }}</div>
                 </td>

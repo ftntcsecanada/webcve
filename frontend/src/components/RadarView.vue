@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, onMounted, computed } from "vue";
 import Icon from "./Icon.vue";
+import ImpactBadge from "./ImpactBadge.vue";
 import { state, radarRequest } from "../lib/store.js";
 import { fmtDate, fmtRelative, fmtNum, fmtEpss, severityKey } from "../lib/format.js";
 import { explain } from "../lib/glossary.js";
@@ -149,6 +150,7 @@ const maxKev = computed(() => Math.max(1, ...(data.value?.summary || []).map((s)
                 <span class="id mono">{{ e.cve }}</span>
                 <span class="vendor">{{ e.vendor }}</span>
                 <span class="title">{{ e.title }}</span>
+                <ImpactBadge :rating="e.aiImpact" compact />
                 <span v-if="e.ransomware" v-tip="explain('Ransomware')" class="badge danger">Ransomware</span>
                 <span v-if="e.epss >= 0.1" v-tip="explain('EPSS')" class="badge warn">EPSS {{ fmtEpss(e.epss) }}</span>
               </button>

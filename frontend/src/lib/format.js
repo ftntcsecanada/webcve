@@ -254,3 +254,8 @@ export const SSVC_LABEL = {
   automatable: { yes: "Automatable", no: "Not automatable" },
   technicalImpact: { total: "Total impact", partial: "Partial impact" },
 };
+
+// AI global-impact ratings, most concerning first
+export const IMPACT_RATINGS = ["severe", "high", "moderate", "low"];
+export const IMPACT_LABEL = { severe: "Severe", high: "High", moderate: "Moderate", low: "Low" };
+export const IMPACT_ELEVATED = ["severe", "high"];

@@ -62,6 +62,8 @@ var sourceCatalog = []SourceInfo{
 		URL: "https://msrc.microsoft.com/update-guide", every: 12 * time.Hour, paths: []string{msrcPath}},
 	{Name: "osv", Label: "OSV package fixes", Description: "Open Source Vulnerabilities: fixed versions from GitHub advisories, language ecosystems and Debian, Red Hat and Alpine.",
 		URL: "https://osv.dev/", every: 24 * time.Hour, paths: []string{osvDir + "/*.zip"}},
+	{Name: "ai-impact", Label: "AI impact assessments", Description: "Early-warning judgment, by an AI model on the private Bifrost gateway, of whether each new critical CVE is likely to cause heavy global impact. Runs when a critical CVE is published or added to KEV, and again when its threat signals change.",
+		every: DeltaInterval, paths: []string{ImpactPath}},
 	{Name: "cwe", Label: "MITRE CWE", Description: "Common Weakness Enumeration catalog, for weakness names.",
 		URL: "https://cwe.mitre.org/", every: 7 * 24 * time.Hour, paths: []string{cwePath}},
 }

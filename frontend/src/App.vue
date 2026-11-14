@@ -6,6 +6,7 @@ import ResultsTable from "./components/ResultsTable.vue";
 import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
+import EarlyWarning from "./components/EarlyWarning.vue";
 import VendorsView from "./components/VendorsView.vue";
 import SigLabRunsPanel from "./components/SigLabRunsPanel.vue";
 import {
@@ -432,6 +433,9 @@ function closePopovers(e) {
             <span v-if="activeFilterCount()" class="filters-count">{{ activeFilterCount() }}</span>
           </button>
         </div>
+
+        <!-- AI early warnings: elevated global-impact ratings, always on top -->
+        <EarlyWarning v-if="!isVendors && !f.aiImpact.length" @open="openCve" />
 
         <!-- KEV overview tiles -->
         <section v-if="isKev && stats" class="tiles">

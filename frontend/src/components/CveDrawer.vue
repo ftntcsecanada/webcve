@@ -2,6 +2,8 @@
 import { ref, watch, computed } from "vue";
 import Icon from "./Icon.vue";
 import CveBrief from "./CveBrief.vue";
+import ImpactBadge from "./ImpactBadge.vue";
+import ImpactCard from "./ImpactCard.vue";
 import SigLabPanel from "./SigLabPanel.vue";
 import { state, fetchCve, fetchRelated, addUnique } from "../lib/store.js";
 import {
@@ -233,6 +235,7 @@ const riskLabel = ["", "low", "med", "high"];
           <div class="headline">
             <h3>{{ cve.title || cve.kevName || "Untitled vulnerability" }}</h3>
             <div class="hl-meta">
+              <ImpactBadge v-if="cve.aiImpact" :rating="cve.aiImpact.rating" :confidence="cve.aiImpact.confidence" />
               <span v-if="cve.inKEV" v-tip="explain('KEV')" class="badge kev"><Icon name="flame" :size="11" />Known exploited</span>
               <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" v-tip="explain('Ransomware')" class="badge danger"><Icon name="lock" :size="11" />Ransomware</span>
               <span v-if="cve.publicExploit && !cve.inKEV" v-tip="explain('Exploit evidence')" class="badge warn"><Icon name="bug" :size="11" />Exploit evidence</span>
@@ -247,6 +250,8 @@ const riskLabel = ["", "low", "med", "high"];
           <Icon name="alert" :size="14" /> CISA lists this CVE as exploited, but its record hasn't reached the CVE list this server mirrors yet.
           Details below come from the KEV catalog and fill in automatically when the record arrives.
         </p>
+
+        <ImpactCard v-if="cve.aiImpact" :assessment="cve.aiImpact" />
 
         <SigLabPanel :cve="cve" />
 
