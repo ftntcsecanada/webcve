@@ -508,11 +508,12 @@ type SignalView struct {
 }
 
 type linkedCVE struct {
-	ID       string  `json:"id"`
-	Score    float64 `json:"score"`
-	InKEV    bool    `json:"inKEV"`
-	AIImpact string  `json:"aiImpact,omitempty"`
-	Covered  bool    `json:"covered,omitempty"` // a FortiGuard IPS signature exists
+	ID       string       `json:"id"`
+	Score    float64      `json:"score"`
+	InKEV    bool         `json:"inKEV"`
+	AIImpact string       `json:"aiImpact,omitempty"`
+	Covered  bool         `json:"covered,omitempty"` // a FortiGuard IPS signature exists
+	IPSRules []IPSRuleRef `json:"ipsRules,omitempty"`
 }
 
 func (h *SignalHub) views() []SignalView {
@@ -545,7 +546,7 @@ func (h *SignalHub) views() []SignalView {
 			if ds != nil {
 				if i, ok := ds.byID[id]; ok {
 					c := &ds.CVEs[i]
-					l := linkedCVE{ID: id, Score: c.BaseScore, InKEV: c.InKEV, Covered: len(c.FortiGuardIPS) > 0}
+					l := linkedCVE{ID: id, Score: c.BaseScore, InKEV: c.InKEV, Covered: len(c.FortiGuardIPS) > 0, IPSRules: c.FortiGuardIPS}
 					if c.AIImpact != nil {
 						l.AIImpact = c.AIImpact.Rating
 					}

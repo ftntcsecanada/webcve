@@ -39,38 +39,38 @@ type FilterRequest struct {
 
 // CVESummary is the slim row representation returned by list queries
 type CVESummary struct {
-	ID             string    `json:"id"`
-	Year           int       `json:"year"`
-	Vendor         string    `json:"vendor"`
-	Product        string    `json:"product"`
-	AffectedCount  int       `json:"affectedCount"`
-	Title          string    `json:"title"`
-	Description    string    `json:"description"`
-	BaseScore      float64   `json:"baseScore"`
-	BaseSeverity   string    `json:"baseSeverity"`
-	CvssVersion    string    `json:"cvssVersion"`
-	AttackVector   string    `json:"attackVector"`
-	CWE            string    `json:"cwe"`
-	DatePublished  time.Time `json:"datePublished"`
-	DateUpdated    time.Time `json:"dateUpdated"`
-	EPSS           float64   `json:"epss"`
-	EPSSPercentile float64   `json:"epssPercentile"`
-	PublicExploit  bool      `json:"publicExploit"`
-	ExploitSources []string  `json:"exploitSources,omitempty"`
-	ScoreSource    string    `json:"scoreSource,omitempty"`
-	InKEV          bool      `json:"inKEV"`
-	KEVName        string    `json:"kevName,omitempty"`
-	KEVDateAdded   string    `json:"kevDateAdded,omitempty"`
-	KEVDueDate     string    `json:"kevDueDate,omitempty"`
-	KEVRansomware  string    `json:"kevKnownRansomwareCampaign,omitempty"`
-	AIImpact       string    `json:"aiImpact,omitempty"`
-	SigReadiness   string    `json:"sigReadiness,omitempty"` // ready, needs_research, not_feasible
-	SigReason      string    `json:"sigReason,omitempty"`
-	Network        string    `json:"network,omitempty"` // deep analysis network-protection verdict
-	Actionable     bool      `json:"actionable,omitempty"`
-	IPSRules       []string  `json:"ipsRules,omitempty"` // FortiGuard IPS signatures covering it
-	AIConfidence   string    `json:"aiConfidence,omitempty"`
-	AISummary      string    `json:"aiSummary,omitempty"`
+	ID             string       `json:"id"`
+	Year           int          `json:"year"`
+	Vendor         string       `json:"vendor"`
+	Product        string       `json:"product"`
+	AffectedCount  int          `json:"affectedCount"`
+	Title          string       `json:"title"`
+	Description    string       `json:"description"`
+	BaseScore      float64      `json:"baseScore"`
+	BaseSeverity   string       `json:"baseSeverity"`
+	CvssVersion    string       `json:"cvssVersion"`
+	AttackVector   string       `json:"attackVector"`
+	CWE            string       `json:"cwe"`
+	DatePublished  time.Time    `json:"datePublished"`
+	DateUpdated    time.Time    `json:"dateUpdated"`
+	EPSS           float64      `json:"epss"`
+	EPSSPercentile float64      `json:"epssPercentile"`
+	PublicExploit  bool         `json:"publicExploit"`
+	ExploitSources []string     `json:"exploitSources,omitempty"`
+	ScoreSource    string       `json:"scoreSource,omitempty"`
+	InKEV          bool         `json:"inKEV"`
+	KEVName        string       `json:"kevName,omitempty"`
+	KEVDateAdded   string       `json:"kevDateAdded,omitempty"`
+	KEVDueDate     string       `json:"kevDueDate,omitempty"`
+	KEVRansomware  string       `json:"kevKnownRansomwareCampaign,omitempty"`
+	AIImpact       string       `json:"aiImpact,omitempty"`
+	SigReadiness   string       `json:"sigReadiness,omitempty"` // ready, needs_research, not_feasible
+	SigReason      string       `json:"sigReason,omitempty"`
+	Network        string       `json:"network,omitempty"` // deep analysis network-protection verdict
+	Actionable     bool         `json:"actionable,omitempty"`
+	IPSRules       []IPSRuleRef `json:"ipsRules,omitempty"` // FortiGuard IPS signatures covering it
+	AIConfidence   string       `json:"aiConfidence,omitempty"`
+	AISummary      string       `json:"aiSummary,omitempty"`
 }
 
 // FilterResponse contains filtered results and metadata
@@ -606,9 +606,7 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 		s.SigReadiness, s.SigReason = signatureReadiness(cve)
 		s.Network, s.Actionable = cve.AIImpact.Network, networkActionable(cve)
 	}
-	for _, r := range cve.FortiGuardIPS {
-		s.IPSRules = append(s.IPSRules, r.Name)
-	}
+	s.IPSRules = cve.FortiGuardIPS
 	return s
 }
 

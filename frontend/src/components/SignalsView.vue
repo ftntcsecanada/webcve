@@ -3,6 +3,7 @@ import { ref, computed, watch } from "vue";
 import Icon from "./Icon.vue";
 import ImpactBadge from "./ImpactBadge.vue";
 import ImpactCard from "./ImpactCard.vue";
+import IpsCoverage from "./IpsCoverage.vue";
 import { signals } from "../lib/signals.js";
 import { fmtNum, fmtRelative, IMPACT_LABEL, SIG_LABEL, NETWORK_LABEL, NETWORK_TIP } from "../lib/format.js";
 
@@ -45,7 +46,7 @@ const showFeeds = ref(false);
 // Actionable: the deep analysis found a concrete network-signature anchor
 // Actionable (decided server-side): a concrete network-signature anchor, and no FortiGuard IPS coverage yet
 const actionable = (s) => s.actionable;
-const covered = (s) => (s.linked || []).some((l) => l.covered);
+const coveredRules = (s) => (s.linked || []).flatMap((l) => l.ipsRules || []);
 const rank = (s) => (s.ai ? { severe: 4, high: 3, moderate: 2, low: 1 }[s.ai.rating] || 0 : 0);
 
 const hiddenCount = computed(() => signals.items.filter((s) => !actionable(s)).length);
@@ -134,7 +135,7 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
             <ImpactBadge v-if="s.ai" :rating="s.ai.rating" :confidence="s.ai.confidence" compact />
             <span v-if="s.ai && !['severe', 'high'].includes(s.ai.rating)" class="badge" :class="`ai-${s.ai.rating}`">{{ IMPACT_LABEL[s.ai.rating] }}</span>
             <span v-if="!s.ai" class="badge ai-low">Not rated yet</span>
-            <span v-if="covered(s)" v-tip="'A CVE this item names already has a FortiGuard IPS signature'" class="badge ips-covered" tabindex="0">IPS covered</span>
+            <IpsCoverage v-if="coveredRules(s).length" :rules="coveredRules(s)" />
             <span v-else-if="s.ai?.network" v-tip="NETWORK_TIP[s.ai.network]" class="badge" :class="`net-${s.ai.network}`" tabindex="0">{{
               NETWORK_LABEL[s.ai.network]
             }}</span>
@@ -148,12 +149,14 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
             </div>
             <div v-if="s.cves?.length" class="sg-cves">
               <template v-for="id in s.cves.slice(0, 8)" :key="id">
-                <button v-if="linked(s, id)" class="cve-chip mono" @click.stop="emit('open', id)">
-                  {{ id }}
-                  <span v-if="linked(s, id).score" class="num">{{ linked(s, id).score.toFixed(1) }}</span>
-                  <span v-if="linked(s, id).inKEV" class="badge kev">KEV</span>
-                  <span v-if="linked(s, id).covered" class="badge ips-covered">IPS</span>
-                </button>
+                <span v-if="linked(s, id)" class="cve-chip-wrap">
+                  <button class="cve-chip mono" @click.stop="emit('open', id)">
+                    {{ id }}
+                    <span v-if="linked(s, id).score" class="num">{{ linked(s, id).score.toFixed(1) }}</span>
+                    <span v-if="linked(s, id).inKEV" class="badge kev">KEV</span>
+                  </button>
+                  <IpsCoverage v-if="linked(s, id).covered" :rules="linked(s, id).ipsRules || []" :cve="id" label="IPS" />
+                </span>
                 <span v-else v-tip="'Not in the CVE data yet'" class="cve-chip mono pending">{{ id }}</span>
               </template>
               <span v-if="s.cves.length > 8" class="muted">+{{ s.cves.length - 8 }}</span>
@@ -350,6 +353,11 @@ const failedFeeds = computed(() => signals.feeds.filter((f) => f.lastError));
   background: var(--surface-hover);
   color: var(--text);
   cursor: pointer;
+}
+.cve-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 .cve-chip.pending {
   cursor: default;

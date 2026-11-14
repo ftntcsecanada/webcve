@@ -2,6 +2,7 @@
 import { computed, watch, nextTick } from "vue";
 import Icon from "./Icon.vue";
 import ImpactBadge from "./ImpactBadge.vue";
+import IpsCoverage from "./IpsCoverage.vue";
 import { state, results, addUnique } from "../lib/store.js";
 import { early } from "../lib/earlywarn.js";
 import {
@@ -159,9 +160,7 @@ watch(
             <a class="id mono" :href="`?cve=${cve.id}`" @click.prevent>{{ cve.id }}</a>
             <div class="id-badges">
               <ImpactBadge :rating="cve.aiImpact" :confidence="cve.aiConfidence" compact />
-              <span v-if="cve.ipsRules?.length" v-tip="`FortiGuard IPS: ${cve.ipsRules.join(', ')}`" class="badge ips-covered" tabindex="0">
-                <Icon name="shield" :size="11" />IPS covered
-              </span>
+              <IpsCoverage v-if="cve.ipsRules?.length" :rules="cve.ipsRules" :cve="cve.id" />
               <span
                 v-else-if="cve.network && IMPACT_ELEVATED.includes(cve.aiImpact)"
                 v-tip="NETWORK_TIP[cve.network]"
