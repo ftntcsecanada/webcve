@@ -27,6 +27,7 @@ const headline = computed(() =>
       </span>
       <span class="badge" :class="`ai-${a.rating}`">{{ IMPACT_LABEL[a.rating] }} global risk</span>
       <span class="ai-conf muted">{{ a.confidence }} confidence</span>
+      <span v-if="a.tier === 'triage'" class="ai-conf muted">· fast triage</span>
     </div>
     <div class="ai-headline">{{ headline }}</div>
     <p class="ai-summary">{{ a.summary }}</p>

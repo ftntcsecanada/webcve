@@ -257,7 +257,7 @@ func TestLiveCalibration(t *testing.T) {
 func fakeGateway(t *testing.T, steps ...func(w http.ResponseWriter, body map[string]any)) (*Assessor, *int) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-key" {
+		if (r.URL.Path != "/v1/chat/completions" && r.URL.Path != "/v1/decisions") || r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("unexpected request %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 		}
 		var body map[string]any
@@ -270,7 +270,8 @@ func fakeGateway(t *testing.T, steps ...func(w http.ResponseWriter, body map[str
 	old := impactRetryDelay
 	impactRetryDelay = func(int) time.Duration { return time.Millisecond }
 	t.Cleanup(func() { impactRetryDelay = old })
-	a := &Assessor{cfg: impactConfig{baseURL: srv.URL, apiKey: "test-key", model: impactDefaultModel}, http: srv.Client()}
+	a := &Assessor{cfg: impactConfig{baseURL: srv.URL, apiKey: "test-key", model: impactDefaultModel,
+		triageModel: impactDefaultTriageModel, escalateAt: 0.5}, http: srv.Client()}
 	return a, &calls
 }
 
@@ -382,5 +383,100 @@ func TestImpactConfigFromEnv(t *testing.T) {
 	t.Setenv("WEBCVE_NO_UPDATES", "1")
 	if impactConfigFromEnv().enabled {
 		t.Error("local-data mode should not call out unless asked")
+	}
+}
+
+func decisionReply(value string, probs map[string]float64) func(http.ResponseWriter, map[string]any) {
+	return func(w http.ResponseWriter, _ map[string]any) {
+		json.NewEncoder(w).Encode(map[string]any{"model": "kev-8b", "answers": map[string]any{
+			"global_impact": map[string]any{"kind": "choice", "value": value, "confidence": 0.8, "probabilities": probs}}})
+	}
+}
+
+func TestTriage(t *testing.T) {
+	var sent map[string]any
+	a, _ := fakeGateway(t, func(w http.ResponseWriter, body map[string]any) {
+		sent = body
+		decisionReply("low", map[string]float64{"low": 0.6, "moderate": 0.3, "high": 0.08, "severe": 0.02})(w, body)
+	})
+	cve := &CVE{ID: "CVE-2026-1", BaseScore: 9.8, Description: "plugin sqli", References: []Reference{{URL: "https://x"}}}
+	res, err := a.triage(cve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Rating != "low" || res.Tier != "triage" || res.Model != "kev-8b" || res.Confidence != "high" || res.Signals == "" {
+		t.Errorf("got %+v", res)
+	}
+	if !strings.Contains(res.Summary, "low 60%") {
+		t.Errorf("summary: %s", res.Summary)
+	}
+	if sent["model"] != "kev-8b" || sent["questions"] == nil || strings.Contains(sent["state"].(string), "https://x") {
+		t.Errorf("request: %v", sent)
+	}
+	if a.cfg.standout(cve, res) {
+		t.Error("a clear low should not escalate")
+	}
+}
+
+func TestStandout(t *testing.T) {
+	cfg := impactConfig{escalateAt: 0.5}
+	low := &ImpactAssessment{Rating: "low", Probabilities: map[string]float64{"low": 0.4, "moderate": 0.3, "high": 0.2, "severe": 0.1}}
+	borderline := &ImpactAssessment{Rating: "moderate", Probabilities: map[string]float64{"moderate": 0.45, "high": 0.3, "severe": 0.25}}
+	cases := []struct {
+		name string
+		cve  CVE
+		t    *ImpactAssessment
+		want bool
+	}{
+		{"low", CVE{}, low, false},
+		{"rated high", CVE{}, &ImpactAssessment{Rating: "high"}, true},
+		{"enough high+severe mass", CVE{}, borderline, true},
+		{"in KEV", CVE{InKEV: true}, low, true},
+		{"actively exploited", CVE{SSVCExploitation: "active"}, low, true},
+	}
+	for _, c := range cases {
+		if got := cfg.standout(&c.cve, c.t); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestTriageRouting(t *testing.T) {
+	now := time.Now()
+	cve := &CVE{BaseScore: 9.8}
+	sig := impactSignals(cve)
+	cfg := impactConfig{triageModel: "kev-8b"}
+	if cfg.needsAnalysis(nil) {
+		t.Error("a new CVE should be triaged first")
+	}
+	pending := &ImpactAssessment{Tier: "triage", Pending: true, Signals: sig, AssessedAt: now}
+	if !needsAssessment(cve, pending, nil, now) || !cfg.needsAnalysis(pending) {
+		t.Error("a pending standout should go straight to deep analysis")
+	}
+	triaged := &ImpactAssessment{Tier: "triage", Signals: sig, AssessedAt: now.Add(-time.Minute)}
+	if needsAssessment(cve, triaged, nil, now) {
+		t.Error("unchanged triage should not be redone")
+	}
+	cve.InKEV = true
+	if !needsAssessment(cve, triaged, nil, now) || cfg.needsAnalysis(triaged) {
+		t.Error("a signal change should re-triage right away")
+	}
+	analysed := &ImpactAssessment{Tier: "analysis", Signals: sig, AssessedAt: now.Add(-48 * time.Hour)}
+	if !cfg.needsAnalysis(analysed) {
+		t.Error("a CVE with a deep analysis should be reanalysed, not re-triaged")
+	}
+	if !(impactConfig{}).needsAnalysis(nil) {
+		t.Error("with triage off everything goes to deep analysis")
+	}
+}
+
+func TestSnapshotHidesPendingTriage(t *testing.T) {
+	a := &Assessor{store: impactStore{Assessments: map[string]*ImpactAssessment{
+		"CVE-1": {Rating: "high", Tier: "triage", Pending: true},
+		"CVE-2": {Rating: "low", Tier: "triage"},
+	}}}
+	snap := a.snapshot()
+	if _, ok := snap["CVE-1"]; ok || snap["CVE-2"] == nil {
+		t.Errorf("snapshot: %v", snap)
 	}
 }

@@ -70,33 +70,46 @@ and cancellation. After changing these values, recreate the container with
 ### AI early-warning assessments
 
 Setting `BIFROST_URL` and `BIFROST_API_KEY` turns on AI global-impact
-assessments. They run on the private Bifrost gateway (OpenAI-compatible API,
-default model `flgpu-openai/qwen3.8-27b-openai`), so CVE data stays on our
+assessments. They run on the private Bifrost gateway, so CVE data stays on our
 infrastructure. Each published CVE with CVSS 9.0 or higher that was published,
-or added to KEV, in the last 30 days gets an assessment: a rating of
-`severe`, `high`, `moderate` or `low` for its likelihood of heavy global impact,
-with the reasoning behind it. A CVE is reassessed when it's added to KEV, a public
-exploit appears, its SSVC exploitation status changes or its EPSS jumps a band.
-Results are kept in `/data/webcve/kev/ai-impact.json`, so restarts and redeploys
-don't pay twice. Progress and errors show on the Data sources page.
+or added to KEV, inside the window gets a rating of `severe`, `high`,
+`moderate` or `low` for its likelihood of heavy global impact. There are two tiers:
+
+1. **Triage** (`kev-8b`, `POST /v1/decisions`): every candidate gets a one-shot
+   typed decision with a probability per rating, in about 150 ms. A clear
+   moderate or low is stored as the result.
+2. **Deep analysis** (`flgpu-openai/qwen3.8-27b-openai`, chat completions): the
+   standouts, meaning triage rated high or severe, P(high)+P(severe) is at least 0.5,
+   or the CVE is in KEV or actively exploited, get a reasoned assessment
+   (summary, drivers, exposure, what to watch for) that replaces the triage
+   result. kev-8b over-rates mid-tier products (IoT, authenticated enterprise
+   bugs), and this second pass corrects that.
+
+A CVE is re-run when it's added to KEV, a public exploit appears, its SSVC
+exploitation status changes or its EPSS jumps a band. A triaged CVE is
+re-triaged right away, and one that already had a deep analysis is reanalysed
+(at most once a day). Results are kept in `/data/webcve/kev/ai-impact.json`, so
+restarts and redeploys don't pay twice. Candidates are scanned at startup and
+after every data refresh (hourly CVE deltas, and KEV/EPSS every 6 hours).
+Progress and errors show on the Data sources page.
 
 ```sh
-BIFROST_URL=https://...                        # gateway base URL (the container must be able to reach it)
-BIFROST_API_KEY=...                            # gateway key; both values together enable assessments
-WEBCVE_AI_MODEL=flgpu-openai/qwen3.8-27b-openai  # default
+BIFROST_URL=http://10.160.20.209:8080          # internal gateway; the public edge returns 403 from this host
+BIFROST_API_KEY=...                            # needs the kev and flgpu-openai providers
+WEBCVE_AI_MODEL=flgpu-openai/qwen3.8-27b-openai  # deep-analysis model (default)
+WEBCVE_AI_TRIAGE_MODEL=kev-8b                  # default; "off" sends every candidate to deep analysis
+WEBCVE_AI_ESCALATE_AT=0.5                      # triage P(high)+P(severe) that triggers deep analysis
 WEBCVE_AI_MIN_SCORE=9.0                        # CVSS threshold
 WEBCVE_AI_WINDOW_DAYS=30                       # how far back to assess (the first start backfills this window)
-WEBCVE_AI_DAILY_LIMIT=200                      # load cap: assessments per UTC day
+WEBCVE_AI_DAILY_LIMIT=200                      # load cap: deep analyses per UTC day (triage is uncapped)
 WEBCVE_AI_ASSESSMENTS=0                        # turn off without removing the key
 ```
 
-Expect about 10 to 20 assessments a day, at roughly 10 to 30 seconds each, plus a
-one-time backfill of roughly 300 to 500 on first start, which the daily limit
-spreads over a couple of days. The model works from the CVE record and this
-platform's enrichment (KEV, EPSS, exploits, OSV packages, affected products) plus
-its own knowledge; it does not browse the web. When
-alerts are on, a fresh critical CVE rated high or severe, or an existing rating
-that escalates to one of those, posts an "AI early warning" to the webhook.
+The models work from the CVE record and this platform's enrichment (KEV, EPSS,
+exploits, OSV packages, affected products) plus their own knowledge; they don't
+browse the web. When alerts are on, a fresh critical CVE whose deep analysis
+rates it high or severe, or an analysis that escalates to one of those, posts an
+"AI early warning" to the webhook. Triage ratings never alert.
 
 Alerts post Slack-compatible `{"text": ...}` JSON for new KEV entries and new
 high-severity CVEs from watched vendors. Restart with `docker-compose up -d`

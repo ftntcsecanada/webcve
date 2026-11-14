@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -91,45 +87,20 @@ func (a *Assessor) assess(cve *CVE) (*ImpactAssessment, error) {
 		return &ImpactAssessment{
 			Rating: out.Rating, Confidence: out.Confidence, Summary: out.Summary,
 			Drivers: out.Drivers, Exposure: out.Exposure, WatchFor: out.WatchFor,
-			Model: model, AssessedAt: time.Now().UTC(), Signals: impactSignals(cve),
+			Model: model, Tier: "analysis", AssessedAt: time.Now().UTC(), Signals: impactSignals(cve),
 		}, nil
 	}
 	return nil, lastErr
 }
 
 func (a *Assessor) chat(body []byte) (*chatResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.cfg.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	raw, err := a.post("/v1/chat/completions", body, 10*time.Minute)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+a.cfg.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.http.Do(req)
-	if err != nil {
-		return nil, errRetryable{err}
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, errRetryable{err}
 	}
 	var res chatResponse
-	jsonErr := json.Unmarshal(raw, &res)
-	if resp.StatusCode != http.StatusOK {
-		msg := strings.TrimSpace(truncate(string(raw), 300))
-		if jsonErr == nil && res.Error != nil && res.Error.Message != "" {
-			msg = res.Error.Message
-		}
-		err := fmt.Errorf("gateway HTTP %d: %s", resp.StatusCode, msg)
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			return nil, errRetryable{err}
-		}
-		return nil, err
-	}
-	if jsonErr != nil {
-		return nil, fmt.Errorf("unreadable gateway response: %w", jsonErr)
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, fmt.Errorf("unreadable gateway response: %w", err)
 	}
 	if len(res.Choices) == 0 {
 		return nil, errors.New("gateway returned no choices")

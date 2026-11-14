@@ -7,11 +7,12 @@ catalog, exploit availability and exploit-likelihood scores.
   and shows remediation due dates, ransomware use and monthly additions. The Vendors
   view compares vendors by volume, severity, KEV rate, exploit rate, Metasploit
   coverage, EPSS and median days from publication to exploitation.
-- **AI early warning.** An AI model on private infrastructure (Qwen via Bifrost) assesses every new critical CVE (CVSS 9.0+) for its
+- **AI early warning.** AI models on private infrastructure (via Bifrost) assess every new critical CVE (CVSS 9.0+) for its
   likelihood of heavy global impact (severe / high / moderate / low). It weighs
   how widely the affected open source package or platform is deployed, internet
   exposure and ease of exploitation, and it doesn't wait for exploitation
-  evidence. High and severe ratings head the main view in an Early warning
+  evidence. A fast decision model (kev-8b) triages each one, and the ones that
+  stand out get a deep analysis from a reasoning model (Qwen). High and severe ratings head the main view in an Early warning
   banner, carry a solid badge and row stripe in the table, can be filtered
   (`impact:severe`) and sorted, and can post a webhook alert. Needs
   `BIFROST_URL` and `BIFROST_API_KEY`; see [deploy/README.md](deploy/README.md).

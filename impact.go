@@ -21,21 +21,28 @@ import (
 // their threat signals change. Results are stored in ImpactPath so restarts and
 // redeploys don't pay for them twice.
 //
-// Inference runs on the private Bifrost gateway (OpenAI-compatible API), so CVE
-// data never leaves our infrastructure. See impact_llm.go.
+// Two tiers run on the private Bifrost gateway, so CVE data never leaves our
+// infrastructure. Every candidate first gets a fast one-shot triage from the
+// kev-8b decision model (impact_kev.go). Standouts (triage rated high or severe,
+// or a real chance of it, or KEV-listed or actively exploited) then get the deep
+// analysis from a reasoning model (impact_llm.go), which replaces the triage
+// result. The daily limit applies to the deep analysis only.
 //
 //	BIFROST_URL, BIFROST_API_KEY  gateway base URL and key; setting both enables assessments
 //	WEBCVE_AI_ASSESSMENTS=0       turns them off even when configured
-//	WEBCVE_AI_MODEL               default flgpu-openai/qwen3.8-27b-openai
+//	WEBCVE_AI_MODEL               deep-analysis model, default flgpu-openai/qwen3.8-27b-openai
+//	WEBCVE_AI_TRIAGE_MODEL        triage model, default kev-8b; "off" sends every candidate to deep analysis
+//	WEBCVE_AI_ESCALATE_AT         triage P(high)+P(severe) that triggers deep analysis (default 0.5)
 //	WEBCVE_AI_MIN_SCORE           CVSS threshold for "critical" (default 9.0)
 //	WEBCVE_AI_WINDOW_DAYS         assess CVEs published or added to KEV this recently (default 30)
-//	WEBCVE_AI_DAILY_LIMIT         cap on assessments per UTC day (default 200)
+//	WEBCVE_AI_DAILY_LIMIT         cap on deep analyses per UTC day (default 200)
 
 const (
 	ImpactPath = DataDir + "/ai-impact.json"
 
 	impactDefaultModel = "flgpu-openai/qwen3.8-27b-openai"
 	impactWorkers      = 2
+	triageWorkers      = 4
 	// A changed signal only triggers a new assessment once the last one is this old
 	impactMinReassess = 24 * time.Hour
 	// After a failure, a CVE isn't retried for this long
@@ -66,6 +73,11 @@ type ImpactAssessment struct {
 	AssessedAt time.Time `json:"assessedAt"`
 	// Signals is the threat-signal fingerprint the assessment was made with
 	Signals string `json:"signals"`
+	// Tier is "triage" (fast decision model) or "analysis" (reasoning model)
+	Tier          string             `json:"tier,omitempty"`
+	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+	// Pending marks a triage standout waiting for its deep analysis; it isn't shown
+	Pending bool `json:"pending,omitempty"`
 }
 
 type impactFailure struct {
@@ -80,18 +92,20 @@ type impactStore struct {
 }
 
 type impactConfig struct {
-	enabled    bool
-	baseURL    string
-	apiKey     string
-	model      string
-	minScore   float64
-	window     time.Duration
-	dailyLimit int
+	enabled     bool
+	baseURL     string
+	apiKey      string
+	model       string
+	triageModel string // "" means no triage tier
+	escalateAt  float64
+	minScore    float64
+	window      time.Duration
+	dailyLimit  int
 }
 
 func impactConfigFromEnv() impactConfig {
 	c := impactConfig{
-		model: impactDefaultModel, minScore: 9.0,
+		model: impactDefaultModel, triageModel: impactDefaultTriageModel, escalateAt: 0.5, minScore: 9.0,
 		window: 30 * 24 * time.Hour, dailyLimit: 200,
 		apiKey: strings.TrimSpace(os.Getenv("BIFROST_API_KEY")),
 	}
@@ -112,6 +126,16 @@ func impactConfigFromEnv() impactConfig {
 	}
 	if v := strings.TrimSpace(os.Getenv("WEBCVE_AI_MODEL")); v != "" {
 		c.model = v
+	}
+	switch v := strings.TrimSpace(os.Getenv("WEBCVE_AI_TRIAGE_MODEL")); v {
+	case "":
+	case "0", "off", "false", "none":
+		c.triageModel = ""
+	default:
+		c.triageModel = v
+	}
+	if v, err := strconv.ParseFloat(os.Getenv("WEBCVE_AI_ESCALATE_AT"), 64); err == nil && v > 0 {
+		c.escalateAt = v
 	}
 	if v, err := strconv.ParseFloat(os.Getenv("WEBCVE_AI_MIN_SCORE"), 64); err == nil && v > 0 {
 		c.minScore = v
@@ -159,10 +183,20 @@ func needsAssessment(cve *CVE, prev *ImpactAssessment, fail *impactFailure, now 
 	if fail != nil && fail.Signals == signals && now.Sub(fail.At) < impactRetryAfter {
 		return false
 	}
-	if prev == nil {
+	if prev == nil || prev.Pending {
 		return true
 	}
-	return prev.Signals != signals && now.Sub(prev.AssessedAt) >= impactMinReassess
+	if prev.Signals == signals {
+		return false
+	}
+	// Triage is cheap, so a signal change re-triages right away
+	return prev.Tier == "triage" || now.Sub(prev.AssessedAt) >= impactMinReassess
+}
+
+// needsAnalysis reports whether a due CVE skips triage: it already stood out
+// once (it has, or is waiting for, a deep analysis), or triage is off
+func (c impactConfig) needsAnalysis(prev *ImpactAssessment) bool {
+	return c.triageModel == "" || (prev != nil && (prev.Tier != "triage" || prev.Pending))
 }
 
 // ---- Prompt and schema ----
@@ -295,16 +329,18 @@ type Assessor struct {
 	day     string
 	usedDay int
 
-	queue chan string
+	triageQ   chan string
+	analysisQ chan string
 }
 
 func newAssessor(app *App) *Assessor {
 	a := &Assessor{
-		cfg:    impactConfigFromEnv(),
-		app:    app,
-		queued: map[string]bool{},
-		queue:  make(chan string, 4096),
-		store:  impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
+		cfg:       impactConfigFromEnv(),
+		app:       app,
+		queued:    map[string]bool{},
+		triageQ:   make(chan string, 8192),
+		analysisQ: make(chan string, 8192),
+		store:     impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
 	}
 	if data, err := os.ReadFile(ImpactPath); err == nil {
 		if err := json.Unmarshal(data, &a.store); err != nil {
@@ -319,8 +355,12 @@ func newAssessor(app *App) *Assessor {
 	}
 	if a.cfg.enabled {
 		a.http = &http.Client{Timeout: 10 * time.Minute}
-		logf("AI impact assessments enabled (%s via Bifrost, CVSS >= %.1f, %d-day window, %d/day)",
-			a.cfg.model, a.cfg.minScore, int(a.cfg.window.Hours()/24), a.cfg.dailyLimit)
+		triage := a.cfg.triageModel
+		if triage == "" {
+			triage = "off"
+		}
+		logf("AI impact assessments enabled (triage %s, analysis %s via Bifrost, CVSS >= %.1f, %d-day window, %d analyses/day)",
+			triage, a.cfg.model, a.cfg.minScore, int(a.cfg.window.Hours()/24), a.cfg.dailyLimit)
 	}
 	return a
 }
@@ -332,7 +372,9 @@ func (a *Assessor) snapshot() map[string]*ImpactAssessment {
 	defer a.mu.Unlock()
 	out := make(map[string]*ImpactAssessment, len(a.store.Assessments))
 	for k, v := range a.store.Assessments {
-		out[k] = v
+		if !v.Pending {
+			out[k] = v
+		}
 	}
 	return out
 }
@@ -347,6 +389,11 @@ func (a *Assessor) start() {
 	a.app.board.records("ai-impact", len(a.store.Assessments), "assessments")
 	for range impactWorkers {
 		go a.worker()
+	}
+	if a.cfg.triageModel != "" {
+		for range triageWorkers {
+			go a.triageWorker()
+		}
 	}
 }
 
@@ -375,8 +422,12 @@ func (a *Assessor) scan(ds *Dataset) {
 	added := 0
 	for _, i := range due {
 		id := ds.CVEs[i].ID
+		q := a.triageQ
+		if a.cfg.needsAnalysis(a.store.Assessments[id]) {
+			q = a.analysisQ
+		}
 		select {
-		case a.queue <- id:
+		case q <- id:
 			a.queued[id] = true
 			added++
 		default:
@@ -406,13 +457,64 @@ func (a *Assessor) takeBudget() bool {
 }
 
 func (a *Assessor) worker() {
-	for id := range a.queue {
+	for id := range a.analysisQ {
 		for !a.takeBudget() {
 			a.app.board.progress("ai-impact", "Daily limit reached; resuming tomorrow (UTC)")
 			time.Sleep(15 * time.Minute)
 		}
 		a.process(id)
 	}
+}
+
+func (a *Assessor) triageWorker() {
+	for id := range a.triageQ {
+		a.processTriage(id)
+	}
+}
+
+// processTriage rates one CVE with the decision model and, when it stands out,
+// hands it to the deep analysis
+func (a *Assessor) processTriage(id string) {
+	ds := a.app.dataset()
+	i, ok := ds.byID[id]
+	if !ok {
+		a.unqueue(id)
+		return
+	}
+	cve := ds.CVEs[i]
+	result, err := a.triage(&cve)
+	if err != nil {
+		a.mu.Lock()
+		a.store.Failures[id] = impactFailure{At: time.Now(), Signals: impactSignals(&cve), Error: "triage: " + err.Error()}
+		a.saveLocked()
+		a.mu.Unlock()
+		a.unqueue(id)
+		logf("AI impact: triage of %s failed: %v", id, err)
+		a.app.board.fail("ai-impact", fmt.Errorf("triage %s: %w", id, err), impactRetryAfter)
+		return
+	}
+	escalate := a.cfg.standout(&cve, result)
+	result.Pending = escalate
+	a.mu.Lock()
+	a.store.Assessments[id] = result
+	delete(a.store.Failures, id)
+	if err := a.saveLocked(); err != nil {
+		logf("AI impact: could not save %s: %v", ImpactPath, err)
+	}
+	a.mu.Unlock()
+	if escalate {
+		logf("AI impact: %s triaged %s, escalating to deep analysis", id, result.Rating)
+		a.analysisQ <- id // stays queued
+		return
+	}
+	a.unqueue(id)
+	a.app.dirty.Store(true)
+}
+
+func (a *Assessor) unqueue(id string) {
+	a.mu.Lock()
+	delete(a.queued, id)
+	a.mu.Unlock()
 }
 
 func (a *Assessor) process(id string) {
@@ -459,6 +561,10 @@ func (a *Assessor) process(id string) {
 		a.app.board.progress("ai-impact", fmt.Sprintf("%d pending", pending))
 	}
 	a.app.dirty.Store(true)
+	// Alerts compare deep analyses only; a triage rating is not a baseline
+	if prev != nil && prev.Tier == "triage" {
+		prev = nil
+	}
 	a.app.alerts.earlyWarning(&cve, prev, result)
 }
 
