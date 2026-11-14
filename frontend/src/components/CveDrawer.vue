@@ -1280,8 +1280,8 @@ h4 .count {
   margin-top: 16px;
   padding: 10px 14px;
   border-radius: var(--radius);
-  border: 1px solid color-mix(in srgb, var(--ok) 40%, var(--border));
-  background: color-mix(in srgb, var(--ok) 6%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
   font-size: 13px;
 }
 .ips-head {

@@ -94,14 +94,18 @@ onBeforeUnmount(close);
   position: relative;
   display: inline-flex;
 }
+/* A button, but it must look exactly like the other badges: inherit the
+   family only, keep the badge's size and weight */
 .ipscov-btn {
   border: 0;
-  font: inherit;
+  margin: 0;
+  font-family: inherit;
+  line-height: inherit;
   cursor: pointer;
 }
 .ipscov-btn:hover,
 .ipscov-btn[aria-expanded="true"] {
-  background: color-mix(in srgb, var(--ok) 28%, transparent);
+  background: color-mix(in srgb, var(--accent) 82%, #000);
 }
 .ipscov-btn.detect {
   color: var(--warn);
