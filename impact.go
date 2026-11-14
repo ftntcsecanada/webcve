@@ -740,6 +740,10 @@ func (al *Alerter) earlyWarning(cve *CVE, prev, cur *ImpactAssessment) {
 	if al == nil || al.webhook == "" || impactRank(cur.Rating) < impactRank("high") {
 		return
 	}
+	// Not actionable yet: notify() posts when it becomes actionable
+	if st, _ := signatureReadiness(cve); st != "ready" {
+		return
+	}
 	if al.vendors != nil && !anyKeyIn(cveVendorKeys(cve), al.vendors) {
 		return
 	}

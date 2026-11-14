@@ -68,10 +68,11 @@ type App struct {
 	// ETags of downloads in progress, so a retry can resume them; guarded by updateMu
 	partialETags map[string]string
 
-	alerts *Alerter
-	impact *Assessor
-	client *http.Client
-	board  *statusBoard
+	alerts  *Alerter
+	impact  *Assessor
+	signals *SignalHub
+	client  *http.Client
+	board   *statusBoard
 }
 
 // UpdateState is persisted so restarts resume incremental updates
@@ -99,6 +100,7 @@ func newApp() *App {
 		board:        newStatusBoard(),
 	}
 	app.impact = newAssessor(app)
+	app.signals = newSignalHub(app)
 	app.status.Store("starting")
 	return app
 }
@@ -197,6 +199,8 @@ func (app *App) bootstrap() {
 	go app.loop("cve-delta", DeltaInterval, app.updateCVEs)
 	go app.loop("kev", KEVInterval, app.updateKEV)
 	go app.loop("epss", EPSSInterval, app.updateEPSS)
+	app.signals.start()
+	go app.loop("signals", signalsInterval, app.signals.poll)
 }
 
 // loop runs fn now and then every interval; failures retry after a few minutes

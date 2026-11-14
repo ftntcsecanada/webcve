@@ -57,6 +57,7 @@ func main() {
 	data.GET("/cves/:id/related", app.handleRelated)
 	data.GET("/cves/:id/epss-history", app.handleEPSSHistory)
 	data.GET("/stats", app.handleGetStats)
+	data.GET("/signals", app.handleSignals)
 	data.POST("/options/search", app.handleSearchOptions)
 	data.POST("/export", app.handleExport)
 	data.POST("/vendors", app.handleVendors)

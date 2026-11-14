@@ -15,6 +15,8 @@ import {
   fmtEpss,
   epssLevel,
   EXPLOIT_SOURCE_LABEL,
+  IMPACT_ELEVATED,
+  SIG_LABEL,
 } from "../lib/format.js";
 import { explain } from "../lib/glossary.js";
 
@@ -155,6 +157,14 @@ watch(
             <a class="id mono" :href="`?cve=${cve.id}`" @click.prevent>{{ cve.id }}</a>
             <div class="id-badges">
               <ImpactBadge :rating="cve.aiImpact" :confidence="cve.aiConfidence" compact />
+              <span
+                v-if="cve.sigReadiness && IMPACT_ELEVATED.includes(cve.aiImpact)"
+                v-tip="cve.sigReason"
+                class="badge"
+                :class="`sig-${cve.sigReadiness}`"
+                tabindex="0"
+                >{{ SIG_LABEL[cve.sigReadiness] }}</span
+              >
               <span v-if="cve.inKEV && !isKev" v-tip="explain('KEV')" class="badge kev">KEV</span>
               <span v-if="cve.kevKnownRansomwareCampaign === 'Known'" v-tip="explain('Ransomware')" class="badge danger">
                 <Icon name="lock" :size="11" />Ransomware

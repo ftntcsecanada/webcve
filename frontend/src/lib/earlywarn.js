@@ -52,7 +52,8 @@ function markSeen() {
 }
 
 async function load() {
-  const req = { aiImpact: IMPACT_ELEVATED, changedSince: earlySince(), pageSize: 500 };
+  // Counts only what a signature team can work on today
+  const req = { aiImpact: IMPACT_ELEVATED, changedSince: earlySince(), sigReady: true, pageSize: 500 };
   try {
     const res = await fetch("/api/cves", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(req) });
     if (!res.ok) return;

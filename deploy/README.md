@@ -124,6 +124,32 @@ browse the web. When alerts are on, a fresh critical CVE whose deep analysis
 rates it high or severe, or an analysis that escalates to one of those, posts an
 "AI early warning" to the webhook. Triage ratings never alert.
 
+### Signature readiness
+
+Every elevated CVE also gets a signature readiness, computed from the data
+rather than by AI: **ready** (public exploit code, a Nuclei template, PoC repos,
+or open source whose fix commit or package release shows the change), **needs
+research** (closed source with no public technical detail, such as most Patch
+Tuesday fixes), or **not feasible** (triage found no Fortinet control that could
+see exploitation). The Early warning view and its counter show only ready items
+unless "Include not yet actionable" is ticked. Early-warning alerts fire only for
+ready items, and a separate "Now actionable" alert fires when a high or severe
+CVE becomes ready (for example when a PoC appears).
+
+### Signals
+
+The Signals view collects early-warning items that aren't tied to a CVE record
+(yet), polled every 30 minutes and kept for 30 days in
+`/data/webcve/kev/signals.json`: CISA, CCCS, NCSC UK, CERT-EU, JPCERT/CC and
+CERT/CC alerts; Cisco, Palo Alto and Ivanti advisories; the oss-security list;
+critical GitHub security advisories; and watchTowr, Horizon3 and Rapid7
+research. None need an account. Each item is linked to the CVEs it names. The
+same AI rates them: kev-8b triage (with an extra question on whether the item is
+about a specific vulnerability or exploitation at all), then a Qwen deep analysis
+for standouts, reusing an existing CVE analysis when the item names one. By
+default only actionable items show, and the tab counts new ones rated high or
+severe. Per-feed health is at the bottom of the view.
+
 Alerts post Slack-compatible `{"text": ...}` JSON for new KEV entries and new
 high-severity CVEs from watched vendors. Restart with `docker-compose up -d`
 after changing `.env`.

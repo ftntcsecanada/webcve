@@ -172,8 +172,10 @@ func TestEarlyWarningAlerts(t *testing.T) {
 	}))
 	defer srv.Close()
 	al := &Alerter{webhook: srv.URL, client: srv.Client()}
-	fresh := &CVE{ID: "CVE-2026-1", DatePublished: time.Now().Add(-time.Hour), BaseScore: 9.8}
-	old := &CVE{ID: "CVE-2026-2", DatePublished: time.Now().AddDate(0, 0, -20), BaseScore: 9.8}
+	fresh := &CVE{ID: "CVE-2026-1", DatePublished: time.Now().Add(-time.Hour), BaseScore: 9.8, GitHubPoCs: 2}
+	old := &CVE{ID: "CVE-2026-2", DatePublished: time.Now().AddDate(0, 0, -20), BaseScore: 9.8, GitHubPoCs: 1}
+	closed := &CVE{ID: "CVE-2026-3", DatePublished: time.Now().Add(-time.Hour), BaseScore: 9.8}
+	al.earlyWarning(closed, nil, &ImpactAssessment{Rating: "severe", Summary: "s"}) // not actionable yet: no alert
 
 	al.earlyWarning(fresh, nil, &ImpactAssessment{Rating: "severe", Summary: "s"})                               // alert
 	al.earlyWarning(fresh, nil, &ImpactAssessment{Rating: "moderate", Summary: "s"})                             // below threshold

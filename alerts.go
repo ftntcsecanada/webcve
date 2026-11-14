@@ -71,6 +71,7 @@ func (a *Alerter) notify(prev, next *Dataset) {
 	if a == nil || a.webhook == "" {
 		return
 	}
+	a.nowActionable(prev, next)
 	newKEV, newCritical := a.changes(prev, next)
 	if len(newKEV) == 0 && len(newCritical) == 0 {
 		return
@@ -140,4 +141,41 @@ func plural(n int, one, many string) string {
 		return one
 	}
 	return many
+}
+
+// nowActionable posts when a CVE whose deep analysis rates it high or severe
+// becomes signature-ready, such as when a public exploit appears. Until then it
+// stays quiet: there's nothing to build a signature from.
+func (a *Alerter) nowActionable(prev, next *Dataset) {
+	var lines []string
+	for i := range next.CVEs {
+		cve := &next.CVEs[i]
+		if cve.AIImpact == nil || cve.AIImpact.Tier == "triage" || impactRank(cve.AIImpact.Rating) < impactRank("high") {
+			continue
+		}
+		if a.vendors != nil && !anyKeyIn(next.vendorKeys[i], a.vendors) {
+			continue
+		}
+		j, existed := prev.byID[cve.ID]
+		if !existed {
+			continue
+		}
+		before, _ := signatureReadiness(&prev.CVEs[j])
+		now, reason := signatureReadiness(cve)
+		if now != "ready" || before == "ready" {
+			continue
+		}
+		id := cve.ID
+		if a.baseURL != "" {
+			id = fmt.Sprintf("<%s/?cve=%s|%s>", a.baseURL, cve.ID, cve.ID)
+		}
+		lines = append(lines, fmt.Sprintf("🛠️ %s %s (%s global risk) %s", id, summaryTitle(cve), cve.AIImpact.Rating, reason))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	if len(lines) > 20 {
+		lines = append(lines[:20], fmt.Sprintf("…and %d more", len(lines)-20))
+	}
+	a.post("*Now actionable: signature-ready early warnings*\n" + strings.Join(lines, "\n"))
 }

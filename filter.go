@@ -29,6 +29,7 @@ type FilterRequest struct {
 	KEVDue         string   `json:"kevDue"`       // "overdue", or N = due within the next N days
 	ChangedSince   string   `json:"changedSince"` // Published or added to KEV at/after this time (RFC 3339 or date)
 	AIImpact       []string `json:"aiImpact"`     // AI global-impact ratings: severe, high, moderate, low
+	SigReady       bool     `json:"sigReady"`     // Only CVEs a signature can be written for today
 	SortBy         string   `json:"sortBy"`
 	SortDesc       bool     `json:"sortDesc"`
 	Page           int      `json:"page"`
@@ -63,6 +64,8 @@ type CVESummary struct {
 	KEVDueDate     string    `json:"kevDueDate,omitempty"`
 	KEVRansomware  string    `json:"kevKnownRansomwareCampaign,omitempty"`
 	AIImpact       string    `json:"aiImpact,omitempty"`
+	SigReadiness   string    `json:"sigReadiness,omitempty"` // ready, needs_research, not_feasible
+	SigReason      string    `json:"sigReason,omitempty"`
 	AIConfidence   string    `json:"aiConfidence,omitempty"`
 	AISummary      string    `json:"aiSummary,omitempty"`
 }
@@ -438,6 +441,11 @@ func (ds *Dataset) failedGroups(i int, f *compiledFilter) int {
 	if f.impacts != nil && (cve.AIImpact == nil || !f.impacts[cve.AIImpact.Rating]) {
 		failed |= gImpact
 	}
+	if f.req.SigReady {
+		if st, _ := signatureReadiness(cve); st != "ready" {
+			failed |= gImpact
+		}
+	}
 	return failed
 }
 
@@ -593,6 +601,8 @@ func (ds *Dataset) summarize(i int, f *compiledFilter) CVESummary {
 	if cve.AIImpact != nil {
 		s.AIImpact, s.AIConfidence = cve.AIImpact.Rating, cve.AIImpact.Confidence
 		s.AISummary = truncate(cve.AIImpact.Summary, 400)
+		// Readiness matters for what the AI flags; elsewhere it's noise
+		s.SigReadiness, s.SigReason = signatureReadiness(cve)
 	}
 	return s
 }
@@ -620,6 +630,16 @@ func sortIndexes(cves []CVE, idx []int, sortBy string) {
 			return compareFloat(a.BaseScore, b.BaseScore)
 		case "epss":
 			return compareFloat(a.EPSS, b.EPSS)
+		case "sigReadiness":
+			ra, _ := signatureReadiness(a)
+			rb, _ := signatureReadiness(b)
+			if d := readinessRank(ra) - readinessRank(rb); d != 0 {
+				return d
+			}
+			if d := compareFloat(impactSortValue(a.AIImpact), impactSortValue(b.AIImpact)); d != 0 {
+				return d
+			}
+			return compareFloat(a.BaseScore, b.BaseScore)
 		case "aiImpact":
 			if d := compareFloat(impactSortValue(a.AIImpact), impactSortValue(b.AIImpact)); d != 0 {
 				return d

@@ -19,6 +19,7 @@ export function emptyFilters() {
     exploit: false,
     exploitSources: [],
     aiImpact: [],
+    sigAll: false, // Early warning: also show items not actionable yet
     vendors: [],
     products: [],
     cwe: "",
@@ -30,6 +31,7 @@ export const VIEWS = {
   all: { label: "All CVEs", short: "All", defaultSort: { by: "datePublished", desc: true } },
   kev: { label: "Known Exploited", short: "KEV", defaultSort: { by: "kevDateAdded", desc: true } },
   early: { label: "Early warning", short: "Early", defaultSort: { by: "aiImpact", desc: true } },
+  signals: { label: "Signals", short: "Signals", defaultSort: { by: "published", desc: true } },
   vendors: { label: "Vendors", short: "Vendors", defaultSort: { by: "datePublished", desc: true } },
 };
 
@@ -166,6 +168,8 @@ function buildRequest(view, f) {
   if (view === "early") {
     if (!f.aiImpact.length) req.aiImpact = ["severe", "high"];
     if (!f.since) req.changedSince = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    // Only what a signature team can work on today, unless asked for everything
+    if (!f.sigAll) req.sigReady = true;
   }
   if (view === "kev" || f.kevOnly) req.inKEV = true;
   if (view === "kev" && f.ransomware) req.ransomware = true;
@@ -310,6 +314,7 @@ function toQuery(view, f, sort, extra = {}) {
   if (f.exploit) p.set("x", "1");
   f.exploitSources.forEach((v) => p.append("xs", v));
   f.aiImpact.forEach((v) => p.append("ai", v));
+  if (f.sigAll) p.set("sa", "1");
   if (f.since) p.set("since", f.since);
   if (sort) {
     const def = VIEWS[view].defaultSort;
@@ -338,7 +343,7 @@ export function fromQuery(qs) {
   const p = new URLSearchParams(qs);
   const f = emptyFilters();
   const num = (k) => (p.has(k) && !isNaN(parseFloat(p.get(k))) ? parseFloat(p.get(k)) : null);
-  const view = ["kev", "early", "vendors"].includes(p.get("view")) ? p.get("view") : "all";
+  const view = ["kev", "early", "signals", "vendors"].includes(p.get("view")) ? p.get("view") : "all";
   if (view === "vendors") {
     state.vendor.sort = p.get("vs") || "kev";
     state.vendor.desc = p.get("vd") !== "asc";
@@ -366,6 +371,7 @@ export function fromQuery(qs) {
   f.exploit = p.get("x") === "1";
   f.exploitSources = p.getAll("xs");
   f.aiImpact = p.getAll("ai");
+  f.sigAll = p.get("sa") === "1";
   f.since = p.get("since") || "";
   const sort = p.has("sort") ? { by: p.get("sort"), desc: p.get("dir") !== "asc" } : { ...VIEWS[view].defaultSort };
   return { view, filters: f, sort, page: num("page") || 1, cve: p.get("cve") };

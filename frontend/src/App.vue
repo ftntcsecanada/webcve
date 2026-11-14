@@ -7,6 +7,8 @@ import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
 import { startEarlyWarning, unseen, unseenSevere, early } from "./lib/earlywarn.js";
+import { startSignals, unseenSignals, unseenSignalsSevere } from "./lib/signals.js";
+import SignalsView from "./components/SignalsView.vue";
 import VendorsView from "./components/VendorsView.vue";
 import SigLabRunsPanel from "./components/SigLabRunsPanel.vue";
 import {
@@ -32,7 +34,9 @@ import { groupMatching } from "./lib/peers.js";
 
 const f = state.filters;
 const isKev = computed(() => state.view === "kev");
-const isVendors = computed(() => state.view === "vendors");
+// Views with their own layout instead of the CVE chart and table
+const isVendors = computed(() => state.view === "vendors" || state.view === "signals");
+const isSignals = computed(() => state.view === "signals");
 
 // ---- Theme ----
 function storageGet(k) {
@@ -338,6 +342,7 @@ const statusText = {
 
 onMounted(() => {
   startEarlyWarning();
+  startSignals();
   readURL();
   startSync();
   fetchResults();
@@ -422,7 +427,7 @@ function closePopovers(e) {
               :class="{ on: state.view === key, kev: key === 'kev' }"
               @click="setView(key)"
             >
-              <Icon :name="key === 'kev' ? 'flame' : key === 'vendors' ? 'package' : key === 'early' ? 'alert' : 'list'" :size="14" />
+              <Icon :name="key === 'kev' ? 'flame' : key === 'vendors' ? 'package' : key === 'early' ? 'alert' : key === 'signals' ? 'radar' : 'list'" :size="14" />
               <span v-if="key === 'kev'" v-tip="explain('KEV')" class="tab-long">{{ v.label }}</span>
               <span v-else-if="key === 'early'" v-tip="explain('AI impact')" class="tab-long">{{ v.label }}</span>
               <span v-else class="tab-long">{{ v.label }}</span>
@@ -435,7 +440,15 @@ function closePopovers(e) {
                 :title="`${unseen.length} new since you last looked`"
                 >{{ fmtNum(unseen.length) }}</span
               >
-              <span v-else-if="stats && key !== 'vendors'" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
+              <span
+                v-else-if="key === 'signals'"
+                v-show="unseenSignals.length"
+                class="tab-count num ew-new"
+                :class="{ severe: unseenSignalsSevere }"
+                :title="`${unseenSignals.length} new actionable signals since you last looked`"
+                >{{ fmtNum(unseenSignals.length) }}</span
+              >
+              <span v-else-if="stats && !['vendors', 'signals'].includes(key)" class="tab-count num">{{ fmtNum(key === "kev" ? stats.totalKev : stats.totalCves) }}</span>
             </button>
           </nav>
           <button class="btn filters-btn" @click="filtersOpen = true">
@@ -468,6 +481,10 @@ function closePopovers(e) {
                 ></span
               >
             </template>
+            <label class="aiq-toggle">
+              <input v-model="state.filters.sigAll" type="checkbox" />
+              Include not yet actionable
+            </label>
             <span class="muted aiq-totals"
               >{{ fmtNum(early.queue.triaged) }} triaged · {{ fmtNum(early.queue.analysed) }} analysed · last
               {{ early.queue.windowDays }} days<template v-if="early.queue.budgetLimit">
@@ -582,7 +599,8 @@ function closePopovers(e) {
           <button class="btn ghost sm" @click="resetFilters">Clear all</button>
         </div>
 
-        <VendorsView v-if="isVendors" @open="openCve" />
+        <SignalsView v-if="isSignals" @open="openCve" />
+        <VendorsView v-else-if="isVendors" @open="openCve" />
 
         <div v-if="activeSaved && saved.active.newCount && !f.since && !isVendors" class="new-banner">
           <b class="num">{{ fmtNum(saved.active.newCount) }}</b> new in “{{ activeSaved.name }}” since {{ fmtDate(saved.active.previousSeen) }}
@@ -927,6 +945,11 @@ function closePopovers(e) {
   .aiq-dot.busy {
     animation: none;
   }
+}
+.aiq-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .aiq-totals {
   margin-left: auto;
