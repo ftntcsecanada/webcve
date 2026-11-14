@@ -71,8 +71,8 @@ and cancellation. After changing these values, recreate the container with
 
 Setting `BIFROST_URL` and `BIFROST_API_KEY` turns on AI global-impact
 assessments. They run on the private Bifrost gateway, so CVE data stays on our
-infrastructure. Each published CVE with CVSS 9.0 or higher that was published,
-or added to KEV, inside the window gets a rating of `severe`, `high`,
+infrastructure. Each published CVE with CVSS 7.0 or higher, or no score yet,
+that was published or added to KEV inside the window gets a rating of `severe`, `high`,
 `moderate` or `low` for its likelihood of heavy global impact. There are two tiers:
 
 1. **Triage** (`kev-8b`, `POST /v1/decisions`): every candidate gets one
@@ -89,8 +89,9 @@ or added to KEV, inside the window gets a rating of `severe`, `high`,
    standouts get a reasoned assessment (rating, summary, drivers, exposure, what
    to watch for, and which Fortinet controls could cover it and what a signature
    would key on) that replaces the triage result. Standouts are CVEs that are
-   both widely deployed (P(widespread)+P(ubiquitous) of at least 0.7) and
-   coverable (P(none) under 0.5), plus every Fortinet product CVE and every
+   both widely deployed (P(widespread)+P(ubiquitous) of at least 0.7, or 0.9
+   when CVSS is below 9.0 or missing) and coverable (P(none) under 0.5, and not
+   confidently a vendor-operated cloud service), plus every Fortinet product CVE and every
    KEV-listed or actively exploited one. The prompt describes what each
    Fortinet control can see, so it doesn't depend on the model's own knowledge.
 
@@ -109,7 +110,8 @@ BIFROST_API_KEY=...                            # needs the kev and flgpu-openai 
 WEBCVE_AI_MODEL=flgpu-openai/qwen3.8-27b-openai  # deep-analysis model (default)
 WEBCVE_AI_TRIAGE_MODEL=kev-8b                  # default; "off" sends every candidate to deep analysis
 WEBCVE_AI_ESCALATE_AT=0.7                      # triage P(widespread)+P(ubiquitous) needed for deep analysis
-WEBCVE_AI_MIN_SCORE=9.0                        # CVSS threshold
+WEBCVE_AI_MIN_SCORE=9.0                        # CVSS at which the 0.7 reach bar applies
+WEBCVE_AI_TRIAGE_MIN_SCORE=7.0                 # lowest CVSS triaged; unscored CVEs are triaged too
 WEBCVE_AI_WINDOW_DAYS=30                       # how far back to assess (the first start backfills this window)
 WEBCVE_AI_DAILY_LIMIT=200                      # load cap: deep analyses per UTC day (triage is uncapped)
 WEBCVE_AI_ASSESSMENTS=0                        # turn off without removing the key

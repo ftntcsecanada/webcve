@@ -13,7 +13,7 @@ import (
 )
 
 func TestImpactCandidate(t *testing.T) {
-	cfg := impactConfig{minScore: 9.0, window: 30 * 24 * time.Hour}
+	cfg := impactConfig{minScore: 9.0, triageMin: 7.0, window: 30 * 24 * time.Hour}
 	now := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
 	recent, old := now.AddDate(0, 0, -3), now.AddDate(-2, 0, 0)
 	cases := []struct {
@@ -22,7 +22,8 @@ func TestImpactCandidate(t *testing.T) {
 		want bool
 	}{
 		{"new critical", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: recent}, true},
-		{"new high", CVE{State: "PUBLISHED", BaseScore: 8.8, DatePublished: recent}, false},
+		{"new high, no triage", CVE{State: "PUBLISHED", BaseScore: 8.8, DatePublished: recent}, false},
+		{"new unscored, no triage", CVE{State: "PUBLISHED", DatePublished: recent}, false},
 		{"old critical", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: old}, false},
 		{"old critical newly in KEV", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: old, InKEV: true, KEVDateAdded: "2026-11-10"}, true},
 		{"old critical, old KEV", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: old, InKEV: true, KEVDateAdded: "2024-01-01"}, false},
@@ -30,6 +31,20 @@ func TestImpactCandidate(t *testing.T) {
 		{"KEV placeholder", CVE{State: "PUBLISHED", BaseScore: 9.8, DatePublished: recent, KEVOnly: true}, false},
 	}
 	for _, c := range cases {
+		if got := cfg.impactCandidate(&c.cve, now); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	cfg.triageModel = "kev-8b"
+	for _, c := range []struct {
+		name string
+		cve  CVE
+		want bool
+	}{
+		{"high goes to triage", CVE{State: "PUBLISHED", BaseScore: 8.1, DatePublished: recent}, true},
+		{"unscored goes to triage", CVE{State: "PUBLISHED", DatePublished: recent}, true},
+		{"medium stays out", CVE{State: "PUBLISHED", BaseScore: 6.5, DatePublished: recent}, false},
+	} {
 		if got := cfg.impactCandidate(&c.cve, now); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
@@ -446,7 +461,7 @@ func TestTriageStateHistory(t *testing.T) {
 }
 
 func TestStandout(t *testing.T) {
-	cfg := impactConfig{escalateAt: 0.7}
+	cfg := impactConfig{escalateAt: 0.7, minScore: 9, escalateLow: 0.9}
 	niche := map[string]float64{"obscure": 0.2, "niche": 0.5, "widespread": 0.28, "ubiquitous": 0.02}
 	broad := map[string]float64{"niche": 0.25, "widespread": 0.6, "ubiquitous": 0.15}
 	seen := map[string]float64{"network": 0.8, "none": 0.2}
@@ -458,9 +473,11 @@ func TestStandout(t *testing.T) {
 		cov    map[string]float64
 		want   bool
 	}{
-		{"niche", CVE{}, niche, seen, false},
-		{"widely deployed and coverable", CVE{}, broad, seen, true},
-		{"widely deployed, nothing can see it", CVE{}, broad, unseen, false},
+		{"niche", CVE{BaseScore: 9.8}, niche, seen, false},
+		{"widely deployed and coverable", CVE{BaseScore: 9.8}, broad, seen, true},
+		{"widely deployed but only CVSS 8", CVE{BaseScore: 8.1}, broad, seen, false},
+		{"ubiquitous and unscored", CVE{}, map[string]float64{"ubiquitous": 0.7, "widespread": 0.25}, seen, true},
+		{"widely deployed, nothing can see it", CVE{BaseScore: 9.8}, broad, unseen, false},
 		{"niche but in KEV", CVE{InKEV: true}, niche, unseen, true},
 		{"niche but actively exploited", CVE{SSVCExploitation: "active"}, niche, seen, true},
 		{"Fortinet product", CVE{AffectedProducts: []AffectedProduct{{Vendor: "Fortinet", Product: "FortiOS"}}}, niche, unseen, true},
@@ -471,8 +488,8 @@ func TestStandout(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
-	cloud := &ImpactAssessment{Probabilities: broad, CoverageProbabilities: seen, VendorCloud: 0.8}
-	if cfg.standout(&CVE{}, cloud) {
+	cloud := &ImpactAssessment{Probabilities: broad, CoverageProbabilities: seen, VendorCloud: 0.95}
+	if cfg.standout(&CVE{BaseScore: 9.8}, cloud) {
 		t.Error("a vendor-operated cloud service should not escalate")
 	}
 }

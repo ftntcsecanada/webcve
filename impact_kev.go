@@ -154,6 +154,9 @@ func triageState(cve *CVE, ds *Dataset) string {
 		b.WriteString(", published " + cve.DatePublished.UTC().Format("2006-01-02"))
 	}
 	b.WriteString(".")
+	if cve.BaseScore == 0 {
+		b.WriteString(" Not scored yet.")
+	}
 	if cve.BaseScore > 0 {
 		fmt.Fprintf(&b, " CVSS %.1f", cve.BaseScore)
 		var parts []string
@@ -181,6 +184,9 @@ func triageState(cve *CVE, ds *Dataset) string {
 		var names []string
 		for _, p := range products {
 			n := strings.TrimSpace(p.Vendor + " " + p.Product)
+			if v := strings.TrimSpace(p.Versions); v != "" && v != "*" && len(v) < 60 {
+				n += " (versions " + v + ")"
+			}
 			if n != "" && !seen[strings.ToLower(n)] && len(names) < 8 {
 				seen[strings.ToLower(n)] = true
 				names = append(names, n)
@@ -284,7 +290,7 @@ var memoryCWEs = map[string]bool{
 
 // Radio protocols: exploitation never crosses an inspectable network or host
 var (
-	radioTerms = regexp.MustCompile(`(?i)\b(baseband|cellular|NAS message|RRC|LTE|5G NR|bluetooth|NFC|zigbee|LoRa)\b`)
+	radioTerms = regexp.MustCompile(`(?i)\b(baseband|cellular|NAS message|RRC|LTE|5G NR|IMS stack|GNSS|bluetooth|NFC|zigbee|LoRa)\b`)
 	wifiTerms  = regexp.MustCompile(`(?i)\b(wi-?fi|WLAN|802\.11)\b`)
 )
 
@@ -389,7 +395,7 @@ func triageCoverageText(cov decisionAnswer) string {
 
 // triageSummary explains a triage result that wasn't escalated
 func triageSummary(t *ImpactAssessment, coverable bool) string {
-	if t.VendorCloud >= 0.5 {
+	if t.VendorCloud >= 0.85 {
 		return "Fast triage judged this a cloud service the vendor fixes on its own backend, which no Fortinet control can cover, so it didn't get a deep analysis. " +
 			"Deployment estimate: " + probList(t.Probabilities) + "."
 	}
@@ -417,7 +423,9 @@ func probList(p map[string]float64) string {
 // coverable reports whether some Fortinet control could plausibly see
 // exploitation: a delivery path we inspect, on something customers run
 func (c impactConfig) coverable(t *ImpactAssessment) bool {
-	return t.CoverageProbabilities["none"] < 0.5 && t.VendorCloud < 0.5
+	// A cloud call that's wrong hides an on-premises target (SharePoint Server
+	// reads as half cloud), so only a confident one counts
+	return t.CoverageProbabilities["none"] < 0.5 && t.VendorCloud < 0.85
 }
 
 // standout reports whether a triaged CVE should get the deep analysis
@@ -428,7 +436,11 @@ func (c impactConfig) standout(cve *CVE, t *ImpactAssessment) bool {
 	if isFortinet(cve) {
 		return true
 	}
-	return c.coverable(t) && triageReach(t.Probabilities) >= c.escalateAt
+	bar := c.escalateAt
+	if cve.BaseScore < c.minScore {
+		bar = max(bar, c.escalateLow)
+	}
+	return c.coverable(t) && triageReach(t.Probabilities) >= bar
 }
 
 func isFortinet(cve *CVE) bool {

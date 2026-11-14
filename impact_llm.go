@@ -55,7 +55,7 @@ func (a *Assessor) assess(cve *CVE) (*ImpactAssessment, error) {
 		MaxTokens:   16000, // reasoning models spend most of this thinking before answering
 		Messages: []chatMessage{
 			{Role: "system", Content: impactSystemPrompt},
-			{Role: "user", Content: "Assess this critical CVE for its likelihood of heavy global impact.\n\n<cve_data>\n" +
+			{Role: "user", Content: "Assess this CVE for its likelihood of heavy global impact.\n\n<cve_data>\n" +
 				impactInput(cve, time.Now()) + "\n</cve_data>"},
 		},
 		ResponseFormat: map[string]any{
