@@ -114,6 +114,7 @@ func (a *Assessor) assessWith(user, signals string, docs []researchDoc) (*Impact
 			Rating: out.Rating, Confidence: out.Confidence, Summary: out.Summary,
 			Drivers: out.Drivers, Exposure: out.Exposure, WatchFor: out.WatchFor, Coverage: out.Coverage,
 			Network: out.Network, NetworkControls: out.Controls, DetectionAnchor: out.Anchor, DeploymentFit: out.Fit,
+			InternetExposure: out.Internet, AttackerAccess: out.Access,
 			ResearchSources: sources, AnalysisVersion: impactAnalysisVersion,
 			Model: model, Tier: "analysis", AssessedAt: time.Now().UTC(), Signals: signals,
 		}, nil

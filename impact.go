@@ -90,12 +90,14 @@ type ImpactAssessment struct {
 	// RulesVersion is the triage rules a triage record was made under
 	RulesVersion int `json:"rulesVersion,omitempty"`
 	// Deep analysis: the network-protection verdict and its evidence
-	AnalysisVersion int      `json:"analysisVersion,omitempty"`
-	Network         string   `json:"network,omitempty"` // one of networkVerdicts
-	NetworkControls []string `json:"networkControls,omitempty"`
-	DetectionAnchor string   `json:"detectionAnchor,omitempty"`
-	DeploymentFit   string   `json:"deploymentFit,omitempty"`
-	ResearchSources []string `json:"researchSources,omitempty"`
+	AnalysisVersion  int      `json:"analysisVersion,omitempty"`
+	Network          string   `json:"network,omitempty"` // one of networkVerdicts
+	NetworkControls  []string `json:"networkControls,omitempty"`
+	DetectionAnchor  string   `json:"detectionAnchor,omitempty"`
+	DeploymentFit    string   `json:"deploymentFit,omitempty"`
+	InternetExposure string   `json:"internetExposure,omitempty"` // one of exposureClasses
+	AttackerAccess   string   `json:"attackerAccess,omitempty"`   // one of accessClasses
+	ResearchSources  []string `json:"researchSources,omitempty"`
 	// Pending marks a triage standout waiting for its deep analysis; it isn't shown
 	Pending bool `json:"pending,omitempty"`
 }
@@ -263,7 +265,8 @@ Then weigh:
 - Blast radius: what an attacker gains (full device or domain control, data theft at scale, a supply-chain foothold).
 
 Rating scale:
-- severe: likely to become a global-scale incident. A ubiquitous open source component or dominant platform, exploitable remotely in common or default deployments, with a realistic path to mass exploitation. Exploitation evidence is not required. A handful of CVEs a year reach this level.
+- severe: likely to become a global-scale incident, reserved for attack surface that internet users can reach and exploit freely. The vulnerable service or interface is exposed to the public internet by design (web servers and applications, PHP and other web runtimes, mail, DNS, VPN and remote access gateways, file transfer servers), or is routinely exposed through common misconfiguration (the management interfaces of firewalls, VPNs, load balancers and other edge devices, database or broker ports left open), and exploiting it needs no account and no action from a victim. The target must also be ubiquitous or dominant, with a realistic path to mass exploitation. Exploitation evidence is not required. A handful of CVEs a year reach this level; PHP-CGI argument injection (CVE-2024-4577) and the Citrix, Ivanti and Fortinet edge-device flaws are the pattern.
+  Never severe, however widespread the product: flaws only reachable from internal networks, an adjacent network or locally; flaws that need valid credentials or a session; and client-side flaws that need a victim to open a file, link or page. Rate those high at most.
 - high: a serious chance of broad impact across many organizations: a widely deployed package or platform where some precondition, configuration requirement or narrower exposure keeps it below severe.
 - moderate: real but bounded impact. A niche or sector-specific product, non-default configuration, authentication required, mostly internal exposure, or a limited install base.
 - low: unlikely to cause broad impact. An obscure product, hard preconditions, local-only access, or a score that overstates practical risk.
@@ -290,7 +293,7 @@ network_protection is one of:
 - hard_to_detect: the traffic is reachable, but the payload is encrypted, indistinct from normal use, or too variable.
 - not_network: exploitation doesn't cross an inspectable network path (local, physical, radio, hardware, cloud backend, build-time supply chain).
 
-Reply with the JSON object only. Write for a busy analyst. The summary is two or three sentences giving the verdict and the main reason. Each driver is one short phrase naming a factor and which way it pushes the rating. Exposure is one sentence estimating the deployment and internet exposure. watch_for is one sentence on the development that would change the rating or the network verdict. network_controls lists the controls that apply (empty for not_network). detection_anchor is one or two sentences naming the concrete traffic feature a signature would key on (protocol, endpoint, field and malicious pattern), or what's missing or why none exists. deployment_fit is one sentence on whether Fortinet protections typically sit in the exploit path for this product. fortinet_coverage is one or two sentences summarising the network verdict for the team. If information is thin, say so and lower your confidence rather than guessing.`
+Reply with the JSON object only. Write for a busy analyst. The summary is two or three sentences giving the verdict and the main reason. Each driver is one short phrase naming a factor and which way it pushes the rating. Exposure is one sentence estimating the deployment and internet exposure. internet_exposure is where the vulnerable interface sits: by_design (normally faces the internet), commonly_exposed (meant to be internal or management-only, but often left reachable from the internet), internal (internal or adjacent networks only), or not_networked (local, physical or file-based on the endpoint). attacker_access is what an internet attacker needs: none (no account, no victim action), credentials (any account or session), or user_interaction (a victim must open, click or visit something). severe requires by_design or commonly_exposed, and none. watch_for is one sentence on the development that would change the rating or the network verdict. network_controls lists the controls that apply (empty for not_network). detection_anchor is one or two sentences naming the concrete traffic feature a signature would key on (protocol, endpoint, field and malicious pattern), or what's missing or why none exists. deployment_fit is one sentence on whether Fortinet protections typically sit in the exploit path for this product. fortinet_coverage is one or two sentences summarising the network verdict for the team. If information is thin, say so and lower your confidence rather than guessing.`
 
 var impactSchema = map[string]any{
 	"type": "object",
@@ -305,11 +308,13 @@ var impactSchema = map[string]any{
 		"network_protection": map[string]any{"type": "string", "enum": networkVerdicts},
 		"network_controls": map[string]any{"type": "array", "items": map[string]any{"type": "string",
 			"enum": []string{"FortiGate IPS", "FortiWeb", "FortiGate AV / FortiSandbox"}}},
-		"detection_anchor": map[string]any{"type": "string"},
-		"deployment_fit":   map[string]any{"type": "string"},
+		"detection_anchor":  map[string]any{"type": "string"},
+		"deployment_fit":    map[string]any{"type": "string"},
+		"internet_exposure": map[string]any{"type": "string", "enum": exposureClasses},
+		"attacker_access":   map[string]any{"type": "string", "enum": accessClasses},
 	},
 	"required": []string{"rating", "confidence", "summary", "drivers", "exposure", "watch_for", "fortinet_coverage",
-		"network_protection", "network_controls", "detection_anchor", "deployment_fit"},
+		"network_protection", "network_controls", "detection_anchor", "deployment_fit", "internet_exposure", "attacker_access"},
 	"additionalProperties": false,
 }
 
@@ -325,6 +330,21 @@ type impactOutput struct {
 	Controls   []string `json:"network_controls"`
 	Anchor     string   `json:"detection_anchor"`
 	Fit        string   `json:"deployment_fit"`
+	Internet   string   `json:"internet_exposure"`
+	Access     string   `json:"attacker_access"`
+}
+
+// Severe is reserved for attack surface internet users can reach and exploit
+// with nothing but network access: the model classifies both, and anything
+// else is capped at high whatever the rating it chose
+var (
+	exposureClasses = []string{"by_design", "commonly_exposed", "internal", "not_networked"}
+	accessClasses   = []string{"none", "credentials", "user_interaction"}
+)
+
+// internetExploitable says whether the classes allow a severe rating
+func internetExploitable(exposure, access string) bool {
+	return (exposure == "by_design" || exposure == "commonly_exposed") && access == "none"
 }
 
 // Network-protection verdicts, from the deep analysis. Only new_signature is
@@ -333,7 +353,7 @@ var networkVerdicts = []string{"new_signature", "needs_details", "generic_covera
 
 // impactAnalysisVersion stamps deep analyses. Bump it when the prompt, schema
 // or research input change: older analyses are redone (newest-first queue).
-const impactAnalysisVersion = 4
+const impactAnalysisVersion = 5
 
 // impactInput is the CVE data given to the model, as JSON
 func impactInput(cve *CVE, now time.Time) string {
@@ -769,6 +789,15 @@ func decodeImpactOutput(text string) (*impactOutput, error) {
 	}
 	if !slices.Contains(networkVerdicts, out.Network) {
 		out.Network = "needs_details" // unknown means not actionable yet
+	}
+	if !slices.Contains(exposureClasses, out.Internet) {
+		out.Internet = ""
+	}
+	if !slices.Contains(accessClasses, out.Access) {
+		out.Access = ""
+	}
+	if out.Rating == "severe" && !internetExploitable(out.Internet, out.Access) {
+		out.Rating = "high" // unknown classes can't vouch for severe either
 	}
 	return &out, nil
 }

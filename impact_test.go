@@ -84,6 +84,27 @@ func TestNeedsAssessment(t *testing.T) {
 	}
 }
 
+func TestSevereNeedsInternetExploitable(t *testing.T) {
+	for _, c := range []struct {
+		exposure, access, want string
+	}{
+		{"by_design", "none", "severe"},
+		{"commonly_exposed", "none", "severe"}, // edge-device admin interfaces left open
+		{"internal", "none", "high"},
+		{"by_design", "credentials", "high"},
+		{"by_design", "user_interaction", "high"},
+		{"", "", "high"}, // missing classes can't vouch for severe
+	} {
+		out, err := decodeImpactOutput(`{"rating":"severe","confidence":"high","summary":"x","internet_exposure":"` + c.exposure + `","attacker_access":"` + c.access + `"}`)
+		if err != nil || out.Rating != c.want {
+			t.Errorf("%s/%s: got %v, %v; want %s", c.exposure, c.access, out, err, c.want)
+		}
+	}
+	if out, _ := decodeImpactOutput(`{"rating":"high","confidence":"high","summary":"x","internet_exposure":"internal","attacker_access":"credentials"}`); out.Rating != "high" {
+		t.Errorf("lower ratings are left alone, got %s", out.Rating)
+	}
+}
+
 func TestDecodeImpactOutput(t *testing.T) {
 	out, err := decodeImpactOutput(`{"rating":"high","confidence":"medium","summary":"Pre-auth RCE in a common VPN.","drivers":["internet-facing"],"exposure":"Tens of thousands exposed.","watch_for":"Public PoC."}`)
 	if err != nil || out.Rating != "high" || out.WatchFor != "Public PoC." {
@@ -255,7 +276,7 @@ func chatReply(content, finish string) func(http.ResponseWriter, map[string]any)
 	}
 }
 
-const goodAnswer = `{"rating":"severe","confidence":"high","summary":"Ubiquitous library.","drivers":["everywhere"],"exposure":"Most servers.","watch_for":"PoC."}`
+const goodAnswer = `{"rating":"severe","confidence":"high","summary":"Ubiquitous library.","drivers":["everywhere"],"exposure":"Most servers.","watch_for":"PoC.","internet_exposure":"by_design","attacker_access":"none"}`
 
 func TestBifrostAssess(t *testing.T) {
 	var sent map[string]any

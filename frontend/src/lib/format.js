@@ -262,6 +262,20 @@ export const IMPACT_ELEVATED = ["severe", "high"];
 
 // Signature readiness labels
 // Network-protection verdict from the deep analysis: can Fortinet network protections act on it?
+// Where the vulnerable interface sits, and what an internet attacker needs:
+// severe is reserved for internet-reachable, no-account, no-victim flaws
+export const EXPOSURE_LABEL = {
+  by_design: "Internet-facing",
+  commonly_exposed: "Often exposed",
+  internal: "Internal only",
+  not_networked: "Not networked",
+};
+export const ACCESS_LABEL = {
+  none: "No auth needed",
+  credentials: "Needs credentials",
+  user_interaction: "Needs a victim",
+};
+
 export const NETWORK_LABEL = {
   new_signature: "New signature",
   needs_details: "Needs details",

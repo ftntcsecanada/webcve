@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from "vue";
 import Icon from "./Icon.vue";
-import { IMPACT_LABEL, IMPACT_ELEVATED, NETWORK_LABEL, NETWORK_TIP, fmtRelative } from "../lib/format.js";
+import { IMPACT_LABEL, IMPACT_ELEVATED, NETWORK_LABEL, NETWORK_TIP, EXPOSURE_LABEL, ACCESS_LABEL, fmtRelative } from "../lib/format.js";
 
 // The AI model's early-warning assessment of global impact for one CVE
 const props = defineProps({ assessment: { type: Object, required: true } });
@@ -63,7 +63,11 @@ const headline = computed(() =>
     <dl class="ai-grid">
       <div v-if="a.exposure">
         <dt>Exposure</dt>
-        <dd>{{ a.exposure }}</dd>
+        <dd>
+          <span v-if="a.internetExposure" class="badge ai-class">{{ EXPOSURE_LABEL[a.internetExposure] || a.internetExposure }}</span>
+          <span v-if="a.attackerAccess" class="badge ai-class">{{ ACCESS_LABEL[a.attackerAccess] || a.attackerAccess }}</span>
+          {{ a.exposure }}
+        </dd>
       </div>
       <div v-if="a.coverage && !a.network">
         <dt>Fortinet coverage</dt>
@@ -82,6 +86,9 @@ const headline = computed(() =>
 </template>
 
 <style scoped>
+.ai-class {
+  margin-right: 4px;
+}
 .ai-card {
   margin-top: 20px;
   padding: 14px 16px;
