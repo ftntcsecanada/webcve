@@ -28,6 +28,21 @@ func (app *App) handleImpactStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, app.impact.queueStatus())
 }
 
+// handleImpactPause pauses ({"paused":true}) or resumes the AI queue
+func (app *App) handleImpactPause(c echo.Context) error {
+	var req struct {
+		Paused *bool `json:"paused"`
+	}
+	if err := c.Bind(&req); err != nil || req.Paused == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": `send {"paused": true|false}`})
+	}
+	if app.impact == nil || !app.impact.cfg.enabled {
+		return c.JSON(http.StatusConflict, map[string]string{"error": "AI analysis is off"})
+	}
+	app.impact.setPaused(*req.Paused)
+	return c.JSON(http.StatusOK, app.impact.queueStatus())
+}
+
 func (app *App) handleHealth(c echo.Context) error {
 	resp := map[string]any{"status": app.statusString()}
 	if ds := app.dataset(); ds != nil {

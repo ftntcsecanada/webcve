@@ -114,6 +114,8 @@ type impactStore struct {
 	// Deep analyses used on BudgetDay (UTC), so a restart doesn't reset the daily limit
 	BudgetDay  string `json:"budgetDay,omitempty"`
 	BudgetUsed int    `json:"budgetUsed,omitempty"`
+	// Paused stops all AI work (CVE and signal triage and analysis) until resumed
+	Paused bool `json:"paused,omitempty"`
 }
 
 type impactConfig struct {
@@ -446,6 +448,8 @@ type Assessor struct {
 	analysis     []analysisItem
 	analysisWake chan struct{}
 	analysing    map[string]time.Time // deep analyses in flight; guarded by mu
+	// resumed is closed while the AI runs and open while it's paused; guarded by mu
+	resumed chan struct{}
 }
 
 func newAssessor(app *App) *Assessor {
@@ -456,6 +460,7 @@ func newAssessor(app *App) *Assessor {
 		analysing:    map[string]time.Time{},
 		triageQ:      make(chan string, 32768),
 		analysisWake: make(chan struct{}, 1),
+		resumed:      make(chan struct{}),
 		store:        impactStore{Assessments: map[string]*ImpactAssessment{}, Failures: map[string]impactFailure{}},
 	}
 	if data, err := os.ReadFile(impactStorePath); err == nil {
@@ -493,6 +498,9 @@ func newAssessor(app *App) *Assessor {
 		}
 		logf("AI impact assessments enabled (triage %s, analysis %s x%d via Bifrost, CVSS >= %.1f, %d-day window, %s)",
 			triage, a.cfg.model, a.cfg.workers, a.cfg.triageMin, int(a.cfg.window.Hours()/24), limit)
+	}
+	if !a.store.Paused {
+		close(a.resumed)
 	}
 	return a
 }
@@ -653,8 +661,50 @@ func (a *Assessor) nextAnalysis() string {
 	}
 }
 
+// setPaused pauses or resumes all AI work. Work in flight finishes; nothing new
+// starts while paused. The state is saved, so a restart stays paused.
+func (a *Assessor) setPaused(paused bool) {
+	if a == nil || !a.cfg.enabled {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.store.Paused == paused {
+		return
+	}
+	a.store.Paused = paused
+	if paused {
+		a.resumed = make(chan struct{})
+	} else {
+		close(a.resumed)
+	}
+	a.saveLocked()
+	logf("AI impact: %s", map[bool]string{true: "paused", false: "resumed"}[paused])
+}
+
+func (a *Assessor) paused() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.store.Paused
+}
+
+// waitWhilePaused blocks every AI worker, CVE and signal, while paused
+func (a *Assessor) waitWhilePaused() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	ch := a.resumed
+	a.mu.Unlock()
+	<-ch
+}
+
 func (a *Assessor) worker() {
 	for {
+		a.waitWhilePaused()
 		id := a.nextAnalysis()
 		for !a.takeBudget() {
 			a.app.board.progress("ai-impact", "Daily limit reached; resuming tomorrow (UTC)")
@@ -666,6 +716,7 @@ func (a *Assessor) worker() {
 
 func (a *Assessor) triageWorker() {
 	for id := range a.triageQ {
+		a.waitWhilePaused()
 		a.processTriage(id)
 	}
 }
@@ -828,6 +879,7 @@ func impactSortValue(a *ImpactAssessment) float64 {
 // ImpactQueueStatus is the AI pipeline's queue depth, for the UI
 type ImpactQueueStatus struct {
 	Enabled          bool             `json:"enabled"`
+	Paused           bool             `json:"paused"`
 	TriageModel      string           `json:"triageModel,omitempty"`
 	AnalysisModel    string           `json:"analysisModel,omitempty"`
 	AwaitingTriage   int              `json:"awaitingTriage"`
@@ -853,6 +905,7 @@ func (a *Assessor) queueStatus() ImpactQueueStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st.TriageModel, st.AnalysisModel = a.cfg.triageModel, a.cfg.model
+	st.Paused = a.store.Paused
 	st.AwaitingTriage = len(a.triageQ)
 	st.AwaitingAnalysis = len(a.analysis)
 	for id, t := range a.analysing {

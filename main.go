@@ -51,6 +51,7 @@ func main() {
 	api.GET("/health", app.handleHealth)
 	api.GET("/sources", app.handleSources)
 	api.GET("/ai-impact/status", app.handleImpactStatus)
+	api.POST("/ai-impact/pause", app.handleImpactPause)
 	data := api.Group("", app.requireData)
 	data.POST("/cves", app.handleFilterCVEs)
 	data.GET("/cves/:id", app.handleGetCVE)

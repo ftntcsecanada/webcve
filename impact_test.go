@@ -606,3 +606,40 @@ func TestOnlyElevatedAnalysesAreRedone(t *testing.T) {
 		t.Error("a current analysis should be kept")
 	}
 }
+
+func TestPauseBlocksWorkersAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	old := impactStorePath
+	impactStorePath = dir + "/ai-impact.json"
+	t.Cleanup(func() { impactStorePath = old })
+	a := newAssessor(&App{board: newStatusBoard()})
+	a.cfg.enabled = true
+	a.waitWhilePaused() // running: returns at once
+
+	a.setPaused(true)
+	a.setPaused(true) // idempotent
+	done := make(chan struct{})
+	go func() { a.waitWhilePaused(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("a paused queue let a worker through")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if !a.queueStatus().Paused {
+		t.Error("status should report paused")
+	}
+
+	// A restart stays paused
+	b := newAssessor(&App{board: newStatusBoard()})
+	if !b.paused() {
+		t.Error("pause wasn't persisted")
+	}
+
+	a.setPaused(false)
+	a.setPaused(false)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("resume didn't release the worker")
+	}
+}

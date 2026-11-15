@@ -54,6 +54,7 @@ func (h *SignalHub) needsTriage(s *Signal, now time.Time) bool {
 
 func (h *SignalHub) triageLoop() {
 	for {
+		h.app.impact.waitWhilePaused()
 		id := h.next(func(s *Signal, now time.Time) bool { return h.needsTriage(s, now) }, func(s *Signal) float64 {
 			return float64(s.Published.Unix()) // newest first
 		})
@@ -214,6 +215,7 @@ func signalTriageSummary(s *Signal, t *ImpactAssessment, coverable bool) string 
 
 func (h *SignalHub) analysisLoop() {
 	for {
+		h.app.impact.waitWhilePaused()
 		id := h.next(func(s *Signal, now time.Time) bool {
 			return s.AI != nil && (s.AI.Pending || analysisOutdated(s.AI)) && (s.FailAt.IsZero() || now.Sub(s.FailAt) > impactRetryAfter)
 		}, func(s *Signal) float64 {

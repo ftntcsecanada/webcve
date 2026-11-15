@@ -75,6 +75,20 @@ async function loadQueue() {
   }
 }
 
+// Pause or resume all AI work; work in flight finishes first
+export async function setQueuePaused(paused) {
+  try {
+    const res = await fetch("/api/ai-impact/pause", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused }),
+    });
+    if (res.ok) early.queue = await res.json();
+  } catch {
+    // The next poll shows the real state
+  }
+}
+
 let started = false;
 export function startEarlyWarning() {
   if (started) return;

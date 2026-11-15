@@ -6,7 +6,7 @@ import ResultsTable from "./components/ResultsTable.vue";
 import CveDrawer from "./components/CveDrawer.vue";
 import BarChart from "./components/BarChart.vue";
 import SourcesPanel from "./components/SourcesPanel.vue";
-import { startEarlyWarning, unseen, unseenSevere, early } from "./lib/earlywarn.js";
+import { startEarlyWarning, unseen, unseenSevere, early, setQueuePaused } from "./lib/earlywarn.js";
 import { startSignals, unseenSignals, unseenSignalsSevere } from "./lib/signals.js";
 import SignalsView from "./components/SignalsView.vue";
 import VendorsView from "./components/VendorsView.vue";
@@ -463,7 +463,16 @@ function closePopovers(e) {
         <div v-if="state.view === 'early' && early.queue" class="ai-queue" role="status">
           <template v-if="!early.queue.enabled">AI assessments are off.</template>
           <template v-else>
-            <span class="aiq-dot" :class="{ busy: early.queue.awaitingTriage || early.queue.awaitingAnalysis || early.queue.analysing.length }" />
+            <span
+              class="aiq-dot"
+              :class="{
+                paused: early.queue.paused,
+                busy: !early.queue.paused && (early.queue.awaitingTriage || early.queue.awaitingAnalysis || early.queue.analysing.length),
+              }"
+            />
+            <span v-if="early.queue.paused"
+              ><b>AI paused</b><template v-if="early.queue.analysing.length"> · finishing {{ early.queue.analysing.length }} in flight</template></span
+            >
             <span v-if="!early.queue.awaitingTriage && !early.queue.awaitingAnalysis && !early.queue.analysing.length"><b>AI pipeline idle</b></span>
             <template v-else>
               <span
@@ -481,6 +490,15 @@ function closePopovers(e) {
                 ></span
               >
             </template>
+            <button
+              type="button"
+              class="btn sm aiq-pause"
+              :aria-pressed="early.queue.paused"
+              :title="early.queue.paused ? 'Resume AI triage and analysis' : 'Pause AI triage and analysis (work in flight finishes)'"
+              @click="setQueuePaused(!early.queue.paused)"
+            >
+              <Icon :name="early.queue.paused ? 'play' : 'pause'" :size="12" />{{ early.queue.paused ? "Resume" : "Pause" }}
+            </button>
             <label class="aiq-toggle">
               <input v-model="state.filters.sigAll" type="checkbox" />
               Include not yet actionable
@@ -931,6 +949,14 @@ function closePopovers(e) {
   height: 8px;
   border-radius: 50%;
   background: var(--text-3);
+}
+.aiq-dot.paused {
+  background: var(--warn);
+}
+.aiq-pause {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .aiq-dot.busy {
   background: var(--sev-high);
